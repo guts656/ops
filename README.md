@@ -106,7 +106,7 @@ npm run lint
 
 ## 一键全新安装
 
-如果别人拿到项目后不需要历史数据，可以在一台已安装 Docker 的 Linux 服务器上执行：
+可以在一台已安装 Docker 的 Linux 服务器上执行：
 
 ```bash
 chmod +x scripts/install-fresh.sh
@@ -138,13 +138,7 @@ http://<server-ip>:3001
 
 ## GitHub 上传前安全清单
 
-不要提交以下内容：
 
-- `.env`、`.env.production`、`.env~`
-- `node_modules/`、`dist/`
-- `storage/`、日志、运行时上传文件
-- 临时调试脚本、验证截图、报告视频和压缩包
-- 私钥、数据库 dump、内部系统配置、真实密码或 token
 
 提交前建议检查：
 
