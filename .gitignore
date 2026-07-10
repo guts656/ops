@@ -31,6 +31,7 @@ dist-ssr
 
 # Local/private tooling and runtime data
 .claude/
+.agents/
 storage/
 
 # Internal/private configs and backups
