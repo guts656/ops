@@ -1,0 +1,833 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                String           @id @default(cuid())
+  username          String           @unique
+  passwordHash      String           @map("password_hash")
+  displayName       String           @map("display_name")
+  role              String
+  title             String
+  enabled           Boolean          @default(true)
+  tokenVersion      Int              @default(1) @map("token_version")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+  customPermissions UserPermission[]
+
+  @@map("users")
+}
+
+model Permission {
+  key             String           @id
+  label           String
+  createdAt       DateTime         @default(now()) @map("created_at")
+  rolePermissions RolePermission[]
+  userPermissions UserPermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  id            String     @id @default(cuid())
+  role          String
+  permissionKey String     @map("permission_key")
+  permission    Permission @relation(fields: [permissionKey], references: [key], onDelete: Cascade)
+
+  @@unique([role, permissionKey])
+  @@map("role_permissions")
+}
+
+model UserPermission {
+  id            String     @id @default(cuid())
+  userId        String     @map("user_id")
+  permissionKey String     @map("permission_key")
+  user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission    Permission @relation(fields: [permissionKey], references: [key], onDelete: Cascade)
+
+  @@unique([userId, permissionKey])
+  @@map("user_permissions")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  time      DateTime @default(now())
+  operator  String
+  action    String
+  target    String
+  result    String
+  detail    String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("audit_logs")
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
+
+model Alert {
+  id                String   @id
+  level             String
+  time              String
+  service           String
+  content           String
+  owner             String
+  status            String
+  diagnosis         String?
+  acknowledgedAt    String?  @map("acknowledged_at")
+  resolvedAt        String?  @map("resolved_at")
+  source            String   @default("平台")
+  title             String?
+  metadata          Json     @default("{}")
+  fingerprint       String?
+  occurrenceCount   Int      @default(1) @map("occurrence_count")
+  firstOccurrenceAt DateTime? @map("first_occurrence_at")
+  lastOccurrenceAt  DateTime? @map("last_occurrence_at")
+  isSuppressed      Boolean  @default(false) @map("is_suppressed")
+  suppressionReason String?  @map("suppression_reason")
+  suppressionUntil  DateTime? @map("suppression_until")
+  relatedType       String?  @map("related_type")
+  relatedId         String?  @map("related_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@index([level])
+  @@index([service])
+  @@index([status])
+  @@index([source])
+  @@index([fingerprint])
+  @@index([isSuppressed])
+  @@map("alerts")
+}
+
+model AlertNoiseRecord {
+  id                String   @id @default(cuid())
+  fingerprint       String   @unique
+  source            String
+  title             String
+  service           String
+  level             String
+  occurrenceCount   Int      @default(1) @map("occurrence_count")
+  firstOccurrenceAt DateTime @default(now()) @map("first_occurrence_at")
+  lastOccurrenceAt  DateTime @default(now()) @map("last_occurrence_at")
+  isSuppressed      Boolean  @default(false) @map("is_suppressed")
+  suppressionReason String?  @map("suppression_reason")
+  suppressionUntil  DateTime? @map("suppression_until")
+  latestAlertId     String?  @map("latest_alert_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@index([source])
+  @@index([service])
+  @@index([level])
+  @@index([isSuppressed])
+  @@index([lastOccurrenceAt])
+  @@map("alert_noise_records")
+}
+
+model AlertWebhookLog {
+  id                String   @id @default(cuid())
+  source            String
+  status            String
+  alertCount        Int      @default(0) @map("alert_count")
+  resolvedCount     Int      @default(0) @map("resolved_count")
+  errorMessage      String?  @map("error_message")
+  requestBody       Json?    @map("request_body")
+  ipAddress         String?  @map("ip_address")
+  userAgent         String?  @map("user_agent")
+  processingTimeMs  Int      @default(0) @map("processing_time_ms")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([source])
+  @@index([status])
+  @@index([createdAt])
+  @@map("alert_webhook_logs")
+}
+
+model Notification {
+  id         String   @id @default(cuid())
+  type       String
+  level      String
+  title      String
+  content    String
+  entityType String?  @map("entity_type")
+  entityId   String?  @map("entity_id")
+  readAt     DateTime? @map("read_at")
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([type])
+  @@index([level])
+  @@index([readAt])
+  @@index([createdAt])
+  @@index([entityType, entityId])
+  @@map("notifications")
+}
+
+model AppLog {
+  id          String   @id
+  time        String
+  timestamp   DateTime
+  service     String
+  level       String
+  traceId     String   @map("trace_id")
+  message     String
+  hostId      String?  @map("host_id")
+  source      String?
+  labels      Json?
+  rawPayload  Json?    @map("raw_payload")
+  ingestedAt  DateTime @default(now()) @map("ingested_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([timestamp])
+  @@index([service, timestamp])
+  @@index([level, timestamp])
+  @@index([traceId])
+  @@index([hostId, timestamp])
+  @@index([source, timestamp])
+  @@map("app_logs")
+}
+
+model LogCollectionRule {
+  id        String   @id @default(cuid())
+  scope     String
+  hostId    String?  @map("host_id")
+  hostGroup String?  @map("host_group")
+  paths     String[] @default([])
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([scope])
+  @@index([hostId])
+  @@index([hostGroup])
+  @@index([enabled])
+  @@map("log_collection_rules")
+}
+
+model LogMonitorRule {
+  id              String             @id @default(cuid())
+  name            String
+  description     String             @default("")
+  enabled         Boolean            @default(true)
+  service         String?
+  level           String?
+  hostId          String?            @map("host_id")
+  hostScope       String             @default("all") @map("host_scope")
+  hostIds         String[]           @default([]) @map("host_ids")
+  hostGroup       String?            @map("host_group")
+  source          String?
+  keywords        String[]           @default([])
+  threshold       Int
+  windowMinutes   Int                @map("window_minutes")
+  cooldownMinutes Int                @default(30) @map("cooldown_minutes")
+  alertLevel      String             @default("警告") @map("alert_level")
+  daysOfWeek      Int[]              @default([]) @map("days_of_week")
+  timeRanges      Json               @default("[]") @map("time_ranges")
+  holidayMode     String             @default("ignore") @map("holiday_mode")
+  holidays        String[]           @default([])
+  notification    Json               @default("{}")
+  selfHealingBinding Json?           @map("self_healing_binding")
+  generatedSelfHealingRuleId String? @map("generated_self_healing_rule_id")
+  generatedAlertHandlingRuleId String? @map("generated_alert_handling_rule_id")
+  lastEvaluatedAt DateTime?          @map("last_evaluated_at")
+  lastTriggeredAt DateTime?          @map("last_triggered_at")
+  triggerCount    Int                @default(0) @map("trigger_count")
+  alerts          LogMonitorAlert[]
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+
+  @@index([enabled])
+  @@index([service])
+  @@index([level])
+  @@index([hostId])
+  @@index([hostScope])
+  @@index([hostGroup])
+  @@index([generatedSelfHealingRuleId])
+  @@index([generatedAlertHandlingRuleId])
+  @@index([lastTriggeredAt])
+  @@map("log_monitor_rules")
+}
+
+model LogMonitorAlert {
+  id                  String         @id @default(cuid())
+  ruleId              String         @map("rule_id")
+  alertId             String         @map("alert_id")
+  matchedCount        Int            @map("matched_count")
+  windowStart         DateTime       @map("window_start")
+  windowEnd           DateTime       @map("window_end")
+  matchedKeywords     String[]       @default([]) @map("matched_keywords")
+  sampleLogIds        String[]       @default([]) @map("sample_log_ids")
+  notificationResults String[]       @default([]) @map("notification_results")
+  rule                LogMonitorRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  createdAt           DateTime       @default(now()) @map("created_at")
+
+  @@index([ruleId, createdAt])
+  @@index([alertId])
+  @@map("log_monitor_alerts")
+}
+
+model HostResourceMonitorRule {
+  id              String                     @id @default(cuid())
+  name            String
+  description     String                     @default("")
+  enabled         Boolean                    @default(true)
+  hostId          String?                    @map("host_id")
+  hostScope       String                     @default("all") @map("host_scope")
+  hostIds         String[]                   @default([]) @map("host_ids")
+  hostGroup       String?                    @map("host_group")
+  metrics         String[]                   @default(["cpu", "memory", "disk"])
+  threshold       Int                        @default(80)
+  cooldownMinutes Int                        @default(30) @map("cooldown_minutes")
+  alertLevel      String                     @default("警告") @map("alert_level")
+  daysOfWeek      Int[]                      @default([]) @map("days_of_week")
+  timeRanges      Json                       @default("[]") @map("time_ranges")
+  holidayMode     String                     @default("ignore") @map("holiday_mode")
+  holidays        String[]                   @default([])
+  notification    Json                       @default("{}")
+  lastEvaluatedAt DateTime?                  @map("last_evaluated_at")
+  lastTriggeredAt DateTime?                  @map("last_triggered_at")
+  triggerCount    Int                        @default(0) @map("trigger_count")
+  alerts          HostResourceMonitorAlert[]
+  createdAt       DateTime                   @default(now()) @map("created_at")
+  updatedAt       DateTime                   @updatedAt @map("updated_at")
+
+  @@index([enabled])
+  @@index([hostId])
+  @@index([hostScope])
+  @@index([hostGroup])
+  @@index([lastTriggeredAt])
+  @@map("host_resource_monitor_rules")
+}
+
+model HostResourceMonitorAlert {
+  id                  String                  @id @default(cuid())
+  ruleId              String                  @map("rule_id")
+  alertId             String                  @map("alert_id")
+  hostId              String                  @map("host_id")
+  metric              String
+  value               Int
+  threshold           Int
+  sampledAt           DateTime                @map("sampled_at")
+  notificationResults String[]                @default([]) @map("notification_results")
+  rule                HostResourceMonitorRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  createdAt           DateTime                @default(now()) @map("created_at")
+
+  @@index([ruleId, createdAt])
+  @@index([hostId, createdAt])
+  @@index([alertId])
+  @@map("host_resource_monitor_alerts")
+}
+
+model CgiMonitorRule {
+  id                  String            @id @default(cuid())
+  name                String
+  description         String            @default("")
+  enabled             Boolean           @default(true)
+  url                 String
+  probeHostId         String?           @map("probe_host_id")
+  probeHost           Host?             @relation("CgiMonitorProbeHost", fields: [probeHostId], references: [id], onDelete: SetNull)
+  method              String            @default("GET")
+  keyword             String
+  matchMode           String            @default("contains") @map("match_mode")
+  expectedStatus      Int?              @map("expected_status")
+  timeoutMs           Int               @default(8000) @map("timeout_ms")
+  intervalSeconds     Int               @default(60) @map("interval_seconds")
+  failureThreshold    Int               @default(1) @map("failure_threshold")
+  cooldownMinutes     Int               @default(30) @map("cooldown_minutes")
+  alertLevel          String            @default("警告") @map("alert_level")
+  daysOfWeek          Int[]             @default([]) @map("days_of_week")
+  timeRanges          Json              @default("[]") @map("time_ranges")
+  holidayMode         String            @default("ignore") @map("holiday_mode")
+  holidays            String[]          @default([])
+  notification        Json              @default("{}")
+  selfHealingBinding  Json?             @map("self_healing_binding")
+  generatedSelfHealingRuleId String?    @map("generated_self_healing_rule_id")
+  generatedAlertHandlingRuleId String?  @map("generated_alert_handling_rule_id")
+  lastCheckedAt       DateTime?         @map("last_checked_at")
+  lastTriggeredAt     DateTime?         @map("last_triggered_at")
+  consecutiveFailures Int               @default(0) @map("consecutive_failures")
+  triggerCount        Int               @default(0) @map("trigger_count")
+  lastStatusCode      Int?              @map("last_status_code")
+  lastLatencyMs       Int?              @map("last_latency_ms")
+  lastError           String?           @map("last_error")
+  alerts              CgiMonitorAlert[]
+  createdAt           DateTime          @default(now()) @map("created_at")
+  updatedAt           DateTime          @updatedAt @map("updated_at")
+
+  @@index([enabled])
+  @@index([url])
+  @@index([probeHostId])
+  @@index([generatedSelfHealingRuleId])
+  @@index([generatedAlertHandlingRuleId])
+  @@index([lastCheckedAt])
+  @@index([lastTriggeredAt])
+  @@map("cgi_monitor_rules")
+}
+
+model CgiMonitorAlert {
+  id              String         @id @default(cuid())
+  ruleId          String         @map("rule_id")
+  alertId         String         @map("alert_id")
+  statusCode      Int?           @map("status_code")
+  latencyMs       Int?           @map("latency_ms")
+  matched         Boolean
+  responseSnippet     String         @default("") @map("response_snippet")
+  errorMessage        String         @default("") @map("error_message")
+  notificationResults String[]       @default([]) @map("notification_results")
+  rule                CgiMonitorRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  createdAt           DateTime       @default(now()) @map("created_at")
+
+  @@index([ruleId, createdAt])
+  @@index([alertId])
+  @@map("cgi_monitor_alerts")
+}
+
+model Host {
+  id               String              @id
+  ip               String              @unique
+  hostname         String
+  os               String
+  osVersion        String              @map("os_version")
+  cpu              Int
+  memory           Int
+  disk             Int
+  status           String
+  group            String
+  tags             String[]            @default([])
+  agentVersion     String              @map("agent_version")
+  agentStatus      String              @map("agent_status")
+  agentInstalledAt String              @map("agent_installed_at")
+  lastHeartbeat    String              @map("last_heartbeat")
+  sshPort          Int                 @map("ssh_port")
+  owner            String
+  changeNo         String              @map("change_no")
+  agentTokenHash   String?             @map("agent_token_hash")
+  agentTokenVersion Int                @default(1) @map("agent_token_version")
+  lastMetricAt     DateTime?           @map("last_metric_at")
+  uptimeSeconds    Int?                @map("uptime_seconds")
+  maintenanceEnabled Boolean           @default(false) @map("maintenance_enabled")
+  maintenanceReason String?            @map("maintenance_reason")
+  maintenanceUntil DateTime?           @map("maintenance_until")
+  maintenanceStartedAt DateTime?       @map("maintenance_started_at")
+  maintenanceOperator String?          @map("maintenance_operator")
+  resourcePoints   HostResourcePoint[]
+  agentJobs        HostAgentJob[]
+  services         HostService[]
+  serviceEvents    ServiceEvent[]
+  containers       HostContainer[]
+  pullCredential   HostPullCredential?
+  batchTargets     BatchJobTarget[]
+  batchArtifacts   BatchJobArtifact[]
+  cgiMonitorProbeRules CgiMonitorRule[] @relation("CgiMonitorProbeHost")
+  createdAt        DateTime            @default(now()) @map("created_at")
+  updatedAt        DateTime            @updatedAt @map("updated_at")
+
+  @@index([maintenanceEnabled, maintenanceUntil])
+  @@map("hosts")
+}
+
+model HostPullCredential {
+  id              String   @id @default(cuid())
+  hostId          String   @unique @map("host_id")
+  sshUsername     String   @map("ssh_username")
+  authType        String   @map("auth_type")
+  encryptedSecret String   @map("encrypted_secret")
+  secretIv        String   @map("secret_iv")
+  secretTag       String   @map("secret_tag")
+  sshPort         Int      @map("ssh_port")
+  enabled         Boolean  @default(true)
+  intervalSeconds Int      @default(30) @map("interval_seconds")
+  lastPulledAt    DateTime? @map("last_pulled_at")
+  lastError       String?  @map("last_error")
+  host            Host     @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@index([enabled])
+  @@map("host_pull_credentials")
+}
+
+model HostResourcePoint {
+  id        String   @id @default(cuid())
+  hostId    String   @map("host_id")
+  time      String
+  sampledAt DateTime @default(now()) @map("sampled_at")
+  cpu       Int
+  memory    Int
+  disk      Int
+  host      Host     @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([hostId, sampledAt])
+  @@map("host_resource_points")
+}
+
+model HostService {
+  id             String   @id @default(cuid())
+  hostId         String   @map("host_id")
+  name           String
+  status         String
+  port           Int?
+  protocol       String?
+  version        String?
+  pid            Int?
+  source         String
+  metadata       Json?
+  lastReportedAt DateTime @map("last_reported_at")
+  host           Host     @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([hostId, name, port])
+  @@index([hostId, lastReportedAt])
+  @@index([name])
+  @@index([status])
+  @@map("host_services")
+}
+
+model HostContainer {
+  id                String   @id @default(cuid())
+  hostId            String   @map("host_id")
+  containerId       String   @map("container_id")
+  name              String
+  image             String
+  status            String
+  state             String
+  restartCount      Int      @default(0) @map("restart_count")
+  ports             Json?
+  cpuPercent        Int?     @map("cpu_percent")
+  memoryUsageBytes  BigInt?  @map("memory_usage_bytes")
+  memoryLimitBytes  BigInt?  @map("memory_limit_bytes")
+  memoryPercent     Int?     @map("memory_percent")
+  networkRxBytes    BigInt?  @map("network_rx_bytes")
+  networkTxBytes    BigInt?  @map("network_tx_bytes")
+  blockReadBytes    BigInt?  @map("block_read_bytes")
+  blockWriteBytes   BigInt?  @map("block_write_bytes")
+  labels            Json?
+  startedAt         DateTime? @map("started_at")
+  lastReportedAt    DateTime @map("last_reported_at")
+  isCurrent         Boolean  @default(true) @map("is_current")
+  logicalKey        String?  @map("logical_key")
+  retiredAt         DateTime? @map("retired_at")
+  retiredReason     String?  @map("retired_reason")
+  host              Host     @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@unique([hostId, containerId])
+  @@index([hostId])
+  @@index([hostId, isCurrent])
+  @@index([hostId, logicalKey])
+  @@index([state])
+  @@index([lastReportedAt])
+  @@map("host_containers")
+}
+
+model ServiceEvent {
+  id         String   @id @default(cuid())
+  hostId     String   @map("host_id")
+  service    String
+  eventType  String   @map("event_type")
+  level      String
+  message    String
+  occurredAt DateTime @map("occurred_at")
+  source     String
+  payload    Json?
+  host       Host     @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([hostId, occurredAt])
+  @@index([service, occurredAt])
+  @@index([level, occurredAt])
+  @@map("service_events")
+}
+
+model HostAuditLog {
+  id             String   @id
+  time           String
+  operator       String
+  action         String
+  target         String
+  result         String
+  detail         String
+  previousHash   String   @map("previous_hash")
+  hash           String
+  retentionUntil String   @map("retention_until")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@map("host_audit_logs")
+}
+
+model HostAgentJob {
+  id          String    @id
+  hostId      String    @map("host_id")
+  type        String
+  transport   String
+  status      String
+  operator    String
+  startedAt   DateTime  @default(now()) @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  summary     String
+  stdout      String    @default("")
+  stderr      String    @default("")
+  host        Host      @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([hostId])
+  @@index([status])
+  @@map("host_agent_jobs")
+}
+
+model BatchJob {
+  id              String           @id
+  name            String
+  type            String
+  status          String
+  operator        String
+  targetDirectory String?          @map("target_directory")
+  fileName        String?          @map("file_name")
+  fileSize        Int?             @map("file_size")
+  script          String?
+  params          Json?
+  startedAt       DateTime         @default(now()) @map("started_at")
+  completedAt     DateTime?        @map("completed_at")
+  summary         String
+  targets         BatchJobTarget[]
+  artifacts       BatchJobArtifact[]
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([type])
+  @@index([startedAt])
+  @@map("batch_jobs")
+}
+
+model BatchJobTarget {
+  id          String    @id
+  jobId       String    @map("job_id")
+  hostId      String    @map("host_id")
+  hostIp      String    @map("host_ip")
+  hostname    String
+  status      String
+  remotePath  String?   @map("remote_path")
+  exitCode    Int?      @map("exit_code")
+  stdout      String    @default("")
+  stderr      String    @default("")
+  summary     String
+  startedAt   DateTime  @default(now()) @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  job         BatchJob  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  host        Host      @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  artifacts   BatchJobArtifact[]
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([jobId])
+  @@index([hostId])
+  @@index([status])
+  @@map("batch_job_targets")
+}
+
+model BatchJobArtifact {
+  id         String         @id
+  jobId      String         @map("job_id")
+  targetId   String         @map("target_id")
+  hostId     String         @map("host_id")
+  fileName   String         @map("file_name")
+  remotePath String         @map("remote_path")
+  localPath  String         @map("local_path")
+  size       Int
+  md5        String
+  mimeType   String?        @map("mime_type")
+  job        BatchJob       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  target     BatchJobTarget @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  host       Host           @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  createdAt  DateTime       @default(now()) @map("created_at")
+
+  @@index([jobId])
+  @@index([targetId])
+  @@index([hostId])
+  @@map("batch_job_artifacts")
+}
+
+model HealthReport {
+  id             String   @id @default(cuid())
+  type           String   @default("weekly")
+  periodStart    DateTime @map("period_start")
+  periodEnd      DateTime @map("period_end")
+  title          String
+  status         String   @default("completed")
+  healthScore    Int      @map("health_score")
+  healthLevel    String   @map("health_level")
+  summary        String
+  causes         Json     @default("[]")
+  alertSummary   Json     @default("{}") @map("alert_summary")
+  sections       Json     @default("[]")
+  suggestions    Json     @default("[]")
+  sourceSnapshot Json     @default("{}") @map("source_snapshot")
+  generatedBy    String   @default("system") @map("generated_by")
+  generatedAt    DateTime @default(now()) @map("generated_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([type, periodStart, periodEnd])
+  @@index([type, generatedAt])
+  @@index([periodStart, periodEnd])
+  @@index([healthLevel])
+  @@map("health_reports")
+}
+
+model SelfHealingRule {
+  id                 String                 @id
+  name               String
+  description        String
+  priority           String
+  enabled            Boolean                @default(true)
+  autoExecute        Boolean                @default(false) @map("auto_execute")
+  executionMode      String                 @default("safe") @map("execution_mode")
+  triggerCount       Int                    @default(0) @map("trigger_count")
+  successRate        Int                    @default(100) @map("success_rate")
+  lastExecutedAt     String                 @default("尚未执行") @map("last_executed_at")
+  logic              String
+  conditions         Json
+  actions            Json
+  notification       Json
+  executions         SelfHealingExecution[]
+  alertHandlingRules AlertHandlingRule[]
+  createdAt          DateTime               @default(now()) @map("created_at")
+  updatedAt          DateTime               @updatedAt @map("updated_at")
+
+  @@map("self_healing_rules")
+}
+
+model SelfHealingExecution {
+  id            String          @id
+  ruleId        String          @map("rule_id")
+  ruleName      String          @map("rule_name")
+  service       String
+  status        String
+  triggeredAt   String          @map("triggered_at")
+  triggerValue  String          @map("trigger_value")
+  duration      String
+  logs          String[]        @default([])
+  mode          String          @default("safe")
+  actionResults Json            @default("[]") @map("action_results")
+  agentJobIds   String[]        @default([]) @map("agent_job_ids")
+  alertId       String?         @map("alert_id")
+  rule          SelfHealingRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  createdAt     DateTime        @default(now()) @map("created_at")
+
+  @@index([alertId])
+  @@map("self_healing_executions")
+}
+
+model AlertHandlingRule {
+  id                String          @id @default(cuid())
+  name              String
+  description       String          @default("")
+  enabled           Boolean         @default(true)
+  priority          Int             @default(100)
+  alertSource       String?         @map("alert_source")
+  alertLevel        String?         @map("alert_level")
+  titlePattern      String?         @map("title_pattern")
+  servicePattern    String?         @map("service_pattern")
+  matchers          Json            @default("{}")
+  selfHealingRuleId String          @map("self_healing_rule_id")
+  cooldownMinutes   Int             @default(30) @map("cooldown_minutes")
+  autoExecute       Boolean         @default(false) @map("auto_execute")
+  lastTriggeredAt   DateTime?       @map("last_triggered_at")
+  selfHealingRule   SelfHealingRule @relation(fields: [selfHealingRuleId], references: [id], onDelete: Cascade)
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+
+  @@index([enabled])
+  @@index([priority])
+  @@index([alertSource])
+  @@index([alertLevel])
+  @@index([selfHealingRuleId])
+  @@map("alert_handling_rules")
+}
+
+model SlowQuery {
+  id             String               @id
+  time           String
+  database       String
+  schema         String
+  application    String
+  user           String
+  sqlFingerprint String               @map("sql_fingerprint")
+  rawSql         String               @map("raw_sql")
+  maskedSql      String               @map("masked_sql")
+  executionTime  Int                  @map("execution_time")
+  scannedRows    Int                  @map("scanned_rows")
+  affectedRows   Int                  @map("affected_rows")
+  frequency      Int
+  riskLevel      String               @map("risk_level")
+  status         String
+  riskScore      Int                  @map("risk_score")
+  plan           Json
+  suggestions    Json
+  trend          Json
+  workOrders     SlowQueryWorkOrder[]
+  createdAt      DateTime             @default(now()) @map("created_at")
+  updatedAt      DateTime             @updatedAt @map("updated_at")
+
+  @@index([database])
+  @@index([riskLevel])
+  @@index([status])
+  @@map("slow_queries")
+}
+
+model SlowQueryWorkOrder {
+  id               String    @id
+  queryId          String    @map("query_id")
+  title            String
+  database         String
+  changeContent    String    @map("change_content")
+  preAssessment    String    @map("pre_assessment")
+  rollbackPlan     String    @map("rollback_plan")
+  approvals        Json
+  status           String
+  executionRecords Json      @map("execution_records")
+  postEvaluation   String?   @map("post_evaluation")
+  createdAtText    String    @map("created_at_text")
+  query            SlowQuery @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@index([queryId])
+  @@index([status])
+  @@map("slow_query_work_orders")
+}
+
+model SlowQueryAuditLog {
+  id             String   @id
+  time           String
+  operator       String
+  action         String
+  target         String
+  ip             String
+  result         String
+  previousHash   String   @map("previous_hash")
+  hash           String
+  retentionUntil String   @map("retention_until")
+  signature      String
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@map("slow_query_audit_logs")
+}
