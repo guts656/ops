@@ -34,6 +34,7 @@ export interface AlertFilters {
   service?: string
   keyword?: string
   source?: string
+  active?: boolean
   includeSuppressed?: boolean
   isSuppressed?: boolean
   startTime?: string

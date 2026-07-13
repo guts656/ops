@@ -50,12 +50,19 @@ function normalizeAgentBaseUrl(value: string) {
   return url.origin
 }
 
+function isLikelyVirtualIpv4(address: string) {
+  return address.startsWith('169.254.')
+    || address.startsWith('172.17.')
+    || address.startsWith('172.18.')
+    || address.startsWith('172.19.')
+}
+
 function localIpv4Urls() {
   const port = process.env.PORT || 3001
   const urls: string[] = []
   for (const values of Object.values(networkInterfaces())) {
     for (const item of values ?? []) {
-      if (item.family === 'IPv4' && !item.internal) urls.push(`http://${item.address}:${port}`)
+      if (item.family === 'IPv4' && !item.internal && !isLikelyVirtualIpv4(item.address)) urls.push(`http://${item.address}:${port}`)
     }
   }
   return urls
@@ -81,6 +88,10 @@ function agentIntervalSeconds() {
 
 function metricTime(date: Date) {
   return date.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })
+}
+
+function isValidPercent(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
 }
 
 function clampPercent(value: number) {
@@ -441,6 +452,10 @@ async function markHostOffline(hostId: string, reason?: string) {
   }
 }
 
+async function recordPullError(hostId: string, reason: string) {
+  await prisma.hostPullCredential.updateMany({ where: { hostId }, data: { lastPulledAt: new Date(), lastError: reason } })
+}
+
 export async function recordHostMetrics(hostId: string, values: { cpu: number; memory: number; disk: number; hostname?: string; osVersion?: string; uptimeSeconds?: number; sampledAt?: Date }) {
   const sampledAt = values.sampledAt ?? new Date()
   const cpu = clampPercent(values.cpu)
@@ -631,15 +646,19 @@ export async function runDueHostPullMetrics() {
     try {
       const values = decryptPullCredential(credential)
       const result = await collectRemoteMetrics(buildConnection(host, values))
-      if (!result.success || result.cpu === undefined || result.memory === undefined || result.disk === undefined) {
-        await markHostOffline(host.id, result.summary)
+      if (!result.success) {
+        await recordPullError(host.id, result.summary)
+        continue
+      }
+      if (!isValidPercent(result.cpu) || !isValidPercent(result.memory) || !isValidPercent(result.disk)) {
+        await recordPullError(host.id, `自动 Pull 指标无效：CPU=${String(result.cpu)}，内存=${String(result.memory)}，磁盘=${String(result.disk)}`)
         continue
       }
 
       await recordHostMetrics(host.id, { cpu: result.cpu, memory: result.memory, disk: result.disk, hostname: result.hostname, osVersion: result.osVersion, uptimeSeconds: result.uptimeSeconds, sampledAt: now })
       await prisma.hostPullCredential.update({ where: { id: credential.id }, data: { lastPulledAt: now, lastError: null } })
     } catch (error) {
-      await markHostOffline(host.id, error instanceof Error ? error.message : '自动 Pull 执行失败')
+      await recordPullError(host.id, error instanceof Error ? error.message : '自动 Pull 执行失败')
     }
   }
 }

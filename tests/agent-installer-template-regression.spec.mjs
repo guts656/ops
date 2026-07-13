@@ -5,7 +5,7 @@ const source = await readFile(new URL('../server/remote/agentInstaller.ts', impo
 const linuxSource = source.match(/cat >\/usr\/local\/bin\/ops-platform-agent <<'PY'\n([\s\S]*?)\nPY/)?.[1] ?? ''
 const windowsSource = source
 
-assert.match(source, /export const AGENT_VERSION = 'v2\.10\.3'/, 'agent version should be bumped for reinstall verification')
+assert.match(source, /export const AGENT_VERSION = 'v2\.10\.4'/, 'agent version should be bumped for reinstall verification')
 assert.match(source, /def post_log_batches\(logs\):/, 'linux agent should upload logs in 100-row batches')
 assert.match(source, /function Post-LogBatches\(\$logs\)/, 'windows agent should upload logs in 100-row batches')
 assert.doesNotMatch(source, /\['docker', 'logs', '--timestamps', '--tail', '80'\]/, 'docker logs should not always be limited to the last 80 rows')
@@ -34,6 +34,11 @@ assert.match(windowsSource, /function Collect-Services/, 'windows agent should k
 assert.match(windowsSource, /\/services"/, 'windows agent should keep posting Windows services')
 assert.match(windowsSource, /\/service-events"/, 'windows agent should keep posting Windows service events')
 assert.match(windowsSource, /Get-WinEvent -LogName \$logName -MaxEvents 80/, 'windows agent should collect Windows Event Log entries')
+assert.match(windowsSource, /Get-EventLog -LogName \$logName -Newest 80/, 'windows agent should fall back to legacy Event Log collection for Windows 2008')
+assert.match(windowsSource, /function ConvertTo-OpsJson\(\$value\)/, 'windows agent should not require ConvertTo-Json on old PowerShell')
+assert.match(windowsSource, /function ConvertFrom-SimpleJson\(\$text\)/, 'windows agent should parse simple JSON without ConvertFrom-Json or System.Web.Extensions')
+assert.match(windowsSource, /HttpWebRequest/, 'windows agent should not require Invoke-RestMethod on old PowerShell')
+assert.doesNotMatch(windowsSource, /Get-ChildItem -LiteralPath \$pathValue -File/, 'windows agent should avoid PowerShell 3-only Get-ChildItem -File')
 assert.match(windowsSource, /foreach \(\$logName in @\('System', 'Application'\)\)/, 'windows agent should default to System and Application event logs')
 assert.doesNotMatch(windowsSource, /Level -notin @\(1, 2\)/, 'windows event logs should not be limited to ERROR events')
 assert.match(windowsSource, /function Get-EventLogLevel\(\$event\)/, 'windows agent should map Event Log levels to platform levels')

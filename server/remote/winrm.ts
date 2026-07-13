@@ -57,6 +57,10 @@ function encodePowerShell(script: string) {
   return Buffer.from(script, 'utf16le').toString('base64')
 }
 
+function compactPowerShell(script: string) {
+  return script.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).join('; ')
+}
+
 function supportsLocalWindowsPowerShell() {
   return process.platform === 'win32'
 }
@@ -79,9 +83,12 @@ async function runNodeWinrmPowershell(input: RemoteConnectionInput, command: str
 }
 
 function nodeWinrmResult(output: string, options: { truncateOutput?: boolean } = {}): RemoteCommandResult {
-  const exitMatch = output.match(/OPS_WINRM_EXIT=(\d+)/)
+  const exitMatch = output.match(/OPS_WINRM_EXIT=(-?\d+)/)
   const clean = output.replace(/OPS_WINRM_EXIT=\d+\s*/g, '').trim()
   if (exitMatch?.[1] && exitMatch[1] !== '0') {
+    return { success: false, stdout: '', stderr: truncate(clean), summary: `WinRM 命令执行失败：${firstLine(clean)}` }
+  }
+  if (!exitMatch && /ParserError|Missing closing|FullyQualifiedErrorId|CategoryInfo/i.test(clean)) {
     return { success: false, stdout: '', stderr: truncate(clean), summary: `WinRM 命令执行失败：${firstLine(clean)}` }
   }
   return { success: true, stdout: options.truncateOutput === false ? clean : truncate(clean), stderr: '', summary: 'WinRM 命令执行成功' }
@@ -89,22 +96,23 @@ function nodeWinrmResult(output: string, options: { truncateOutput?: boolean } =
 
 async function invokeLargeRemoteScriptViaNodeWinrm(input: RemoteConnectionInput, remoteScript: string, options: { truncateOutput?: boolean } = {}): Promise<RemoteCommandResult> {
   const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
-  const base = 'C:\\ProgramData\\OpsPlatformAgent'
+  const base = 'C:/ProgramData/OpsPlatformAgent'
   const scriptPath = `${base}\\ops-remote-${id}.ps1`
   const payloadPath = `${scriptPath}.b64`
   const encoded = Buffer.from(`$ErrorActionPreference = 'Stop'\n${remoteScript}`, 'utf8').toString('base64')
 
   try {
-    await runNodeWinrmPowershell(input, `New-Item -ItemType Directory -Force -Path ${psDouble(base)} | Out-Null; Remove-Item -LiteralPath ${psDouble(scriptPath)}, ${psDouble(payloadPath)} -Force -ErrorAction SilentlyContinue`)
+    await runNodeWinrmPowershell(input, `New-Item -ItemType Directory -Force -Path ${psString(base)} | Out-Null; Remove-Item -LiteralPath ${psString(scriptPath)}, ${psString(payloadPath)} -Force -ErrorAction SilentlyContinue`)
     for (let offset = 0; offset < encoded.length; offset += 60000) {
       const chunk = encoded.slice(offset, offset + 60000)
-      await runNodeWinrmPowershell(input, `Add-Content -LiteralPath ${psDouble(payloadPath)} -Value ${psString(chunk)} -Encoding ASCII -NoNewline`)
+      const method = offset === 0 ? 'WriteAllText' : 'AppendAllText'
+      await runNodeWinrmPowershell(input, `[IO.File]::${method}(${psString(payloadPath)}, ${psString(chunk)}, [Text.Encoding]::ASCII)`)
     }
-    const output = await runNodeWinrmPowershell(input, `$bytes = [Convert]::FromBase64String((Get-Content -LiteralPath ${psDouble(payloadPath)} -Raw)); [IO.File]::WriteAllBytes(${psDouble(scriptPath)}, $bytes); & ${psDouble(scriptPath)}; Write-Output \"OPS_WINRM_EXIT=$LASTEXITCODE\"`)
-    await runNodeWinrmPowershell(input, `Remove-Item -LiteralPath ${psDouble(scriptPath)}, ${psDouble(payloadPath)} -Force -ErrorAction SilentlyContinue`).catch(() => undefined)
+    const output = await runNodeWinrmPowershell(input, `$bytes = [Convert]::FromBase64String((Get-Content -LiteralPath ${psString(payloadPath)} -Raw)); [IO.File]::WriteAllBytes(${psString(scriptPath)}, $bytes); & ${psString(scriptPath)}; Write-Output ('OPS_WINRM_EXIT=' + $LASTEXITCODE)`)
+    await runNodeWinrmPowershell(input, `Remove-Item -LiteralPath ${psString(scriptPath)}, ${psString(payloadPath)} -Force -ErrorAction SilentlyContinue`).catch(() => undefined)
     return nodeWinrmResult(output, options)
   } catch (error) {
-    await runNodeWinrmPowershell(input, `Remove-Item -LiteralPath ${psDouble(scriptPath)}, ${psDouble(payloadPath)} -Force -ErrorAction SilentlyContinue`).catch(() => undefined)
+    await runNodeWinrmPowershell(input, `Remove-Item -LiteralPath ${psString(scriptPath)}, ${psString(payloadPath)} -Force -ErrorAction SilentlyContinue`).catch(() => undefined)
     const message = normalizeWinrmError(error, input)
     return { success: false, stdout: '', stderr: truncate(message), summary: `WinRM 命令执行失败：${firstLine(message)}` }
   }
@@ -117,10 +125,9 @@ async function invokeRemoteScriptViaNodeWinrm(input: RemoteConnectionInput, remo
 
   if (remoteScript.length > 6000) return invokeLargeRemoteScriptViaNodeWinrm(input, remoteScript, options)
 
-  const command = `& { $ErrorActionPreference = 'Stop'
+  const command = compactPowerShell(`$ErrorActionPreference = 'Stop'
 ${remoteScript}
-Write-Output "OPS_WINRM_EXIT=$LASTEXITCODE"
-}`
+Write-Output ('OPS_WINRM_EXIT=' + $LASTEXITCODE)`)
   try {
     const text = await runNodeWinrmPowershell(input, command)
     return nodeWinrmResult(text, options)
@@ -250,34 +257,29 @@ export async function downloadWinrmFile(input: RemoteConnectionInput, remotePath
 }
 
 export async function uploadWinrmFile(input: RemoteConnectionInput, remotePath: string, content: Buffer): Promise<RemoteFileUploadResult> {
-  const tempPath = `${remotePath}.ops-upload-${Date.now().toString(36)}.b64`
+  const targetPath = remotePath.replace(/\\/g, '/')
+  const tempPath = `${targetPath}.ops-upload-${Date.now().toString(36)}.b64`
   const prepare = await runWinrmCommand(input, `
-    $target = ${psDouble(remotePath)}
-    $temp = ${psDouble(tempPath)}
-    $directory = Split-Path -Parent $target
+    $directory = Split-Path -Parent ${psString(targetPath)}
     if ($directory) { New-Item -ItemType Directory -Force -Path $directory | Out-Null }
-    if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force }
-    New-Item -ItemType File -Force -Path $temp | Out-Null
+    if (Test-Path -LiteralPath ${psString(tempPath)}) { Remove-Item -LiteralPath ${psString(tempPath)} -Force }
+    [IO.File]::WriteAllText(${psString(tempPath)}, '', [Text.Encoding]::ASCII)
   `)
   if (!prepare.success) return { ...prepare, remotePath, bytes: content.length }
 
   const encoded = content.toString('base64')
-  const chunkSize = 60000
+  const chunkSize = 2000
   for (let offset = 0; offset < encoded.length; offset += chunkSize) {
     const chunk = encoded.slice(offset, offset + chunkSize)
-    const append = await runWinrmCommand(input, `
-      Add-Content -LiteralPath ${psDouble(tempPath)} -Value ${psString(chunk)} -Encoding ASCII -NoNewline
-    `)
+    const append = await runWinrmCommand(input, `[IO.File]::AppendAllText(${psString(tempPath)}, ${psString(chunk)}, [Text.Encoding]::ASCII)`)
     if (!append.success) return { ...append, remotePath, bytes: content.length }
   }
 
   const commit = await runWinrmCommand(input, `
-    $target = ${psDouble(remotePath)}
-    $temp = ${psDouble(tempPath)}
-    $bytes = [Convert]::FromBase64String((Get-Content -LiteralPath $temp -Raw))
-    [System.IO.File]::WriteAllBytes($target, $bytes)
-    Remove-Item -LiteralPath $temp -Force
-    Write-Output "BYTES=$($bytes.Length)"
+    $bytes = [Convert]::FromBase64String([IO.File]::ReadAllText(${psString(tempPath)}) )
+    [System.IO.File]::WriteAllBytes(${psString(targetPath)}, $bytes)
+    Remove-Item -LiteralPath ${psString(tempPath)} -Force
+    Write-Output ('BYTES=' + $bytes.Length)
   `)
   return { ...commit, summary: commit.success ? '文件上传成功' : commit.summary, remotePath, bytes: content.length }
 }

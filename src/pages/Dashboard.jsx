@@ -22,7 +22,7 @@ import AlertList from '../components/AlertList'
 const statConfig = [
   { key: 'health', title: '系统健康度', icon: HeartOutlined, color: '#52c41a', bg: '#f6ffed' },
   { key: 'alerts', title: '今日告警', icon: AlertOutlined, color: '#ff4d4f', bg: '#fff2f0' },
-  { key: 'services', title: '上报服务', icon: ApiOutlined, color: '#faad14', bg: '#fffbe6' },
+  { key: 'services', title: '服务可用性', icon: ApiOutlined, color: '#faad14', bg: '#fffbe6' },
   { key: 'availability', title: '可用性', icon: DashboardOutlined, color: '#1677ff', bg: '#e6f4ff' },
   { key: 'batchJobs', title: '批处理任务', icon: ForkOutlined, color: '#722ed1', bg: '#f9f0ff' },
 ]
@@ -70,9 +70,9 @@ function AlertTrendChart({ data = [] }) {
   )
 }
 
-function TrendIcon({ value }) {
-  if (value > 5) return <ArrowUpOutlined style={{ color: '#52c41a' }} />
-  if (value === 0) return <ArrowDownOutlined style={{ color: '#ff4d4f' }} />
+function TrendIcon({ trendType }) {
+  if (trendType === 'up') return <ArrowUpOutlined style={{ color: '#52c41a' }} />
+  if (trendType === 'danger') return <ArrowDownOutlined style={{ color: '#ff4d4f' }} />
   return <MinusOutlined style={{ color: '#8c8c8c' }} />
 }
 
@@ -92,6 +92,28 @@ function StatusTag({ status }) {
   }
   const c = config[status] || { color: 'default', text: status }
   return <Tag color={c.color}>{c.text}</Tag>
+}
+
+function serviceStatusColor(status) {
+  if (status === '健康') return 'success'
+  if (status === '警告') return 'warning'
+  return 'error'
+}
+
+function serviceProgressStatus(score = 0) {
+  if (score >= 90) return 'success'
+  if (score >= 70) return 'normal'
+  return 'exception'
+}
+
+function instanceStatusTag(status, bucket) {
+  const color = bucket === 'healthy' ? 'success' : bucket === 'warning' ? 'warning' : bucket === 'abnormal' ? 'error' : 'default'
+  return <Tag color={color}>{status || 'unknown'}</Tag>
+}
+
+function serviceUrl(path, service, extra = '') {
+  const query = `service=${encodeURIComponent(service)}`
+  return `${path}?${query}${extra}`
 }
 
 export default function Dashboard() {
@@ -125,6 +147,14 @@ export default function Dashboard() {
     })
   }, [data])
 
+  const openServiceAlerts = useCallback((service) => {
+    navigate(serviceUrl('/alerts', service, '&active=true'))
+  }, [navigate])
+
+  const openServiceLogs = useCallback((service, hostId) => {
+    navigate(serviceUrl('/logs', service, hostId ? `&hostId=${encodeURIComponent(hostId)}` : ''))
+  }, [navigate])
+
   const batchColumns = [
     { title: '任务名称', dataIndex: 'name', ellipsis: true },
     { title: '状态', dataIndex: 'status', width: 90, render: (v) => <StatusTag status={v} /> },
@@ -152,6 +182,110 @@ export default function Dashboard() {
       ),
     },
     { title: '状态', dataIndex: 'status', width: 80, render: (v) => <StatusTag status={v} /> },
+  ]
+
+  const serviceHealth = data?.serviceHealth || {}
+
+  const serviceSummaryItems = [
+    { label: '服务名', value: serviceHealth.uniqueServiceNameCount ?? 0, color: 'blue' },
+    { label: '上传服务实例', value: serviceHealth.uploadedServiceInstanceCount ?? 0, color: 'green' },
+    { label: '容器实例', value: serviceHealth.containerInstanceCount ?? 0, color: 'purple' },
+    { label: '聚合项', value: serviceHealth.aggregateNameCount ?? 0, color: 'gold' },
+  ]
+
+  const renderInstanceAvailability = (record) => {
+    const serviceTotal = record.serviceInstanceCount ?? 0
+    const containerTotal = record.containerInstanceCount ?? 0
+    return (
+      <Space direction="vertical" size={0}>
+        <Typography.Text strong>{record.healthyInstances ?? 0}/{record.instances ?? 0}</Typography.Text>
+        <Typography.Text type={serviceTotal ? undefined : 'secondary'} style={{ fontSize: 12 }}>
+          服务 {record.healthyServiceInstanceCount ?? 0}/{serviceTotal}
+        </Typography.Text>
+        <Typography.Text type={containerTotal ? undefined : 'secondary'} style={{ fontSize: 12 }}>
+          容器 {record.healthyContainerInstanceCount ?? 0}/{containerTotal}
+        </Typography.Text>
+      </Space>
+    )
+  }
+
+  const serviceColumns = [
+    {
+      title: '服务',
+      dataIndex: 'name',
+      fixed: 'left',
+      width: 170,
+      ellipsis: true,
+      render: (name) => <Typography.Text strong>{name}</Typography.Text>,
+    },
+    {
+      title: '健康度',
+      dataIndex: 'healthScore',
+      width: 150,
+      render: (score = 0) => (
+        <Space direction="vertical" size={0} style={{ width: 120 }}>
+          <Progress percent={Math.round(score)} size="small" status={serviceProgressStatus(score)} />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>{score}%</Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      width: 90,
+      render: (v) => <Tag color={serviceStatusColor(v)}>{v}</Tag>,
+    },
+    {
+      title: '实例可用性',
+      width: 130,
+      render: (_, r) => renderInstanceAvailability(r),
+    },
+    { title: '受影响主机', dataIndex: 'affectedHosts', width: 110 },
+    {
+      title: '未解决告警',
+      dataIndex: 'activeAlerts',
+      width: 120,
+      render: (count, r) => count ? <Button type="link" size="small" onClick={() => openServiceAlerts(r.name)}>{count} 条</Button> : <Typography.Text type="secondary">0</Typography.Text>,
+    },
+    {
+      title: '日志/状态告警',
+      width: 140,
+      render: (_, r) => `日志 ${r.logAlerts ?? 0} / 状态 ${r.statusAlerts ?? 0}`,
+    },
+    { title: '今日错误日志', dataIndex: 'errorLogsToday', width: 120 },
+    {
+      title: '操作',
+      width: 160,
+      render: (_, r) => (
+        <Space size={4}>
+          <Button size="small" onClick={() => openServiceAlerts(r.name)}>告警</Button>
+          <Button size="small" onClick={() => openServiceLogs(r.name)}>日志</Button>
+        </Space>
+      ),
+    },
+  ]
+
+  const serviceHostColumns = (serviceName) => [
+    {
+      title: '主机',
+      render: (_, h) => (
+        <Button type="link" size="small" onClick={() => navigate(`/hosts/${h.hostId}`)}>
+          {h.hostname || h.ip}
+        </Button>
+      ),
+    },
+    { title: 'IP', dataIndex: 'ip', width: 150 },
+    { title: '实例状态', width: 120, render: (_, h) => instanceStatusTag(h.status, h.statusBucket) },
+    { title: '类型', dataIndex: 'kind', width: 90, render: (kind) => kind === 'container' ? '容器' : '服务' },
+    { title: '端口', dataIndex: 'port', width: 80, render: (port) => port || '-' },
+    { title: '来源', dataIndex: 'source', width: 120, ellipsis: true },
+    { title: '最后上报', dataIndex: 'lastReportedAt', width: 180 },
+    { title: '告警', dataIndex: 'activeAlerts', width: 80 },
+    {
+      title: '操作',
+      width: 90,
+      render: (_, h) => <Button size="small" onClick={() => openServiceLogs(serviceName, h.hostId)}>日志</Button>,
+    },
   ]
 
   return (
@@ -199,13 +333,13 @@ export default function Dashboard() {
                   >
                     <stat.icon style={{ fontSize: 22, color: stat.color }} />
                   </div>
-                  <TrendIcon value={stat.value} />
+                  <TrendIcon trendType={stat.trendType} />
                 </div>
                 <div style={{ fontSize: 28, fontWeight: 700, color: '#f6f9ff', marginBottom: 4 }}>{stat.value}</div>
                 <div style={{ fontSize: 13, color: '#b8c4dc' }}>{stat.title}</div>
                 <Tag
                   style={{ marginTop: 8, fontSize: 12 }}
-                  color={stat.trendType === 'danger' ? 'error' : stat.trendType === 'up' ? 'success' : 'default'}
+                  color={stat.trendType === 'danger' ? 'error' : stat.trendType === 'warning' ? 'warning' : stat.trendType === 'up' ? 'success' : 'default'}
                   icon={stat.trendType === 'danger' ? <WarningOutlined /> : null}
                 >
                   {stat.trend}
@@ -430,36 +564,46 @@ export default function Dashboard() {
           </Card>
         </Col>
 
-        {/* 服务状态 */}
-        <Col xs={24} lg={8}>
+        {/* 服务可用性 */}
+        <Col xs={24}>
           <Card
             title={
               <Space>
                 <PlayCircleOutlined style={{ color: '#1677ff' }} />
-                服务状态
+                服务可用性
               </Space>
             }
+            extra={<Typography.Text type="secondary">按名称聚合展示可用性；数量区分上传服务实例、容器实例和告警/日志关联项</Typography.Text>}
             loading={loading}
           >
             {data?.services?.length > 0 ? (
-              <Table
-                dataSource={data.services}
-                columns={[
-                  { title: '服务', dataIndex: 'name', ellipsis: true },
-                  {
-                    title: '状态',
-                    dataIndex: 'status',
-                    width: 80,
-                    render: (v) => (
-                      <Tag color={v === '健康' ? 'success' : v === '警告' ? 'warning' : 'error'}>{v}</Tag>
+              <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                <Space size={[8, 8]} wrap>
+                  {serviceSummaryItems.map((item) => (
+                    <Tag key={item.label} color={item.color}>{item.label}：{item.value}</Tag>
+                  ))}
+                </Space>
+                <Table
+                  dataSource={data.services}
+                  columns={serviceColumns}
+                  rowKey="key"
+                  pagination={{ pageSize: 6, showSizeChanger: false }}
+                  size="small"
+                  scroll={{ x: 1120 }}
+                  expandable={{
+                    expandedRowRender: (record) => (
+                      <Table
+                        dataSource={record.hosts || []}
+                        columns={serviceHostColumns(record.name)}
+                        rowKey={(row) => `${record.key}-${row.hostId}-${row.kind}-${row.port || 'none'}`}
+                        pagination={false}
+                        size="small"
+                      />
                     ),
-                  },
-                  { title: '实例', dataIndex: 'instances', width: 70 },
-                ]}
-                rowKey="key"
-                pagination={false}
-                size="small"
-              />
+                    rowExpandable: (record) => Boolean(record.hosts?.length),
+                  }}
+                />
+              </Space>
             ) : (
               <Empty description="暂无服务数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
             )}

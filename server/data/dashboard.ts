@@ -10,13 +10,56 @@ function avg(values: number[]) {
 }
 
 function clampScore(value: number) {
-  return Math.max(0, Math.min(100, value))
+  return Math.max(0, Math.min(100, Math.round(value * 10) / 10))
 }
 
-function serviceStatus(statuses: string[], errorCount: number) {
-  if (statuses.some((status) => ['failed', 'error', '异常', 'exited', 'dead', 'stopped', 'inactive', 'not_running', 'missing', 'removed', 'unknown'].includes(status.toLowerCase())) || errorCount > 0) return '异常'
-  if (statuses.some((status) => ['degraded', 'warn', 'warning', '警告', 'restarting', 'activating', 'paused'].includes(status.toLowerCase()))) return '警告'
-  return '健康'
+type ServiceStatusBucket = 'healthy' | 'warning' | 'abnormal' | 'unknown'
+type ServiceAlertKind = 'log' | 'status' | 'other'
+
+type ServiceHostRow = {
+  hostId: string
+  ip: string
+  hostname: string
+  hostStatus: string
+  status: string
+  statusBucket: ServiceStatusBucket
+  port?: number | null
+  source: string
+  kind: 'service' | 'container'
+  lastReportedAt: Date
+  activeAlerts: number
+}
+
+type ServiceAggregate = {
+  key: string
+  name: string
+  hosts: ServiceHostRow[]
+  affectedHostIds: Set<string>
+  activeAlerts: number
+  criticalAlerts: number
+  severeAlerts: number
+  warningAlerts: number
+  infoAlerts: number
+  logAlerts: number
+  statusAlerts: number
+  otherAlerts: number
+  errorLogsToday: number
+  latestAlertAt?: Date
+}
+
+function normalizeServiceName(name: string) {
+  const value = String(name || '').trim()
+  return value.startsWith('container:') ? value.slice('container:'.length) : value
+}
+
+function normalizeServiceStatus(status: string | null | undefined): ServiceStatusBucket {
+  const value = String(status || '').trim().toLowerCase()
+  if (!value) return 'unknown'
+  if (['running', 'active', 'healthy', 'ok', 'up', '正常', '健康'].includes(value)) return 'healthy'
+  if (['degraded', 'warn', 'warning', '警告', 'restarting', 'activating', 'paused'].includes(value)) return 'warning'
+  if (['failed', 'error', '异常', 'exited', 'dead', 'stopped', 'inactive', 'not_running', 'missing', 'removed', 'down'].includes(value)) return 'abnormal'
+  if (value === 'unknown') return 'unknown'
+  return 'unknown'
 }
 
 function dateKey(date: Date) {
@@ -38,14 +81,114 @@ function shanghaiTime(date: Date | string | null) {
   return d.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
 }
 
+function createServiceAggregate(name: string): ServiceAggregate {
+  return {
+    key: name,
+    name,
+    hosts: [],
+    affectedHostIds: new Set<string>(),
+    activeAlerts: 0,
+    criticalAlerts: 0,
+    severeAlerts: 0,
+    warningAlerts: 0,
+    infoAlerts: 0,
+    logAlerts: 0,
+    statusAlerts: 0,
+    otherAlerts: 0,
+    errorLogsToday: 0,
+  }
+}
+
+function ensureService(map: Map<string, ServiceAggregate>, name: string) {
+  const key = normalizeServiceName(name)
+  if (!key) return undefined
+  const current = map.get(key)
+  if (current) return current
+  const next = createServiceAggregate(key)
+  map.set(key, next)
+  return next
+}
+
+function classifyServiceAlert(alert: { source: string; relatedType: string | null; fingerprint: string | null }): ServiceAlertKind {
+  const source = alert.source || ''
+  const relatedType = alert.relatedType || ''
+  const fingerprint = alert.fingerprint || ''
+  if (source.includes('日志') || source.toLowerCase().includes('log') || relatedType === 'log_monitor_rule') return 'log'
+  if (source === 'Agent服务监控' || relatedType === 'host_service' || fingerprint.startsWith('agent-service:')) return 'status'
+  return 'other'
+}
+
+function metadataObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function metadataString(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function metadataStringArray(value: unknown) {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+}
+
+function hostIdsFromAlertMetadata(metadata: unknown) {
+  const data = metadataObject(metadata)
+  const ids = new Set<string>()
+  const direct = metadataString(data.hostId) || metadataString(data.sourceHostId)
+  if (direct) ids.add(direct)
+  for (const id of metadataStringArray(data.matchedHostIds)) ids.add(id)
+  for (const id of metadataStringArray(data.hostIds)) ids.add(id)
+  return ids
+}
+
+function levelKey(level: string) {
+  if (level === '紧急') return 'criticalAlerts'
+  if (level === '严重') return 'severeAlerts'
+  if (level === '警告') return 'warningAlerts'
+  return 'infoAlerts'
+}
+
+function computeServiceHealthScore(service: ServiceAggregate) {
+  const healthyInstances = service.hosts.filter((host) => host.statusBucket === 'healthy').length
+  const warningInstances = service.hosts.filter((host) => host.statusBucket === 'warning').length
+  const abnormalInstances = service.hosts.filter((host) => host.statusBucket === 'abnormal').length
+  const unknownInstances = service.hosts.filter((host) => host.statusBucket === 'unknown').length
+  const base = service.hosts.length ? (healthyInstances / service.hosts.length) * 100 : 100
+  const alertPenalty = service.criticalAlerts * 12 + service.severeAlerts * 8 + service.warningAlerts * 4 + service.infoAlerts * 1
+  const instancePenalty = warningInstances * 4 + abnormalInstances * 10 + unknownInstances * 3
+  const logPenalty = Math.min(service.errorLogsToday * 0.5, 15)
+  return clampScore(base - alertPenalty - instancePenalty - logPenalty)
+}
+
+function aggregateStatus(service: ServiceAggregate, healthScore: number) {
+  const hasAbnormal = service.hosts.some((host) => host.statusBucket === 'abnormal')
+  const hasWarning = service.hosts.some((host) => host.statusBucket === 'warning' || host.statusBucket === 'unknown')
+  if (hasAbnormal || service.criticalAlerts > 0 || service.severeAlerts > 0 || healthScore < 70) return '异常'
+  if (hasWarning || service.activeAlerts > 0 || service.errorLogsToday > 0 || healthScore < 90) return '警告'
+  return '健康'
+}
+
+function latestDate(values: Array<Date | undefined>) {
+  const dates = values.filter((value): value is Date => Boolean(value))
+  if (!dates.length) return undefined
+  return dates.reduce((latest, value) => value.getTime() > latest.getTime() ? value : latest, dates[0])
+}
+
+function scoreTrendType(score: number) {
+  if (score >= 90) return 'up'
+  if (score >= 70) return 'warning'
+  return 'danger'
+}
+
 export async function getDashboardData() {
   const startOfToday = new Date()
   startOfToday.setHours(0, 0, 0, 0)
   const startOfTrend = trendDates()[0]
 
+  const hostSelect = { id: true, ip: true, hostname: true, status: true, os: true, group: true, maintenanceEnabled: true }
   const [
     hosts, activeAlerts, todayAlerts, trendAlerts,
-    hostServices, hostContainers, errorLogs, recentAlerts,
+    hostServices, hostContainers, errorLogs, serviceAlerts, recentAlerts,
     batchJobs, selfHealingRules, logMonitorRules,
     recentBatchJobs, recentSelfHealing,
   ] = await Promise.all([
@@ -53,9 +196,22 @@ export async function getDashboardData() {
     prisma.alert.count({ where: { status: { not: '已解决' }, isSuppressed: false } }),
     prisma.alert.count({ where: { createdAt: { gte: startOfToday }, isSuppressed: false } }),
     prisma.alert.findMany({ where: { createdAt: { gte: startOfTrend }, isSuppressed: false }, select: { createdAt: true } }),
-    prisma.hostService.findMany({ where: { host: { os: { not: 'Linux' } }, NOT: { metadata: { path: ['hiddenStoppedBaseline'], equals: true } } }, orderBy: { lastReportedAt: 'desc' } }),
-    prisma.hostContainer.findMany({ where: { isCurrent: true }, orderBy: { lastReportedAt: 'desc' } }),
+    prisma.hostService.findMany({
+      where: { host: { os: { not: 'Linux' } }, NOT: { metadata: { path: ['hiddenStoppedBaseline'], equals: true } } },
+      select: { id: true, hostId: true, name: true, status: true, port: true, source: true, lastReportedAt: true, host: { select: hostSelect } },
+      orderBy: { lastReportedAt: 'desc' },
+    }),
+    prisma.hostContainer.findMany({
+      where: { isCurrent: true },
+      select: { id: true, hostId: true, name: true, state: true, status: true, lastReportedAt: true, host: { select: hostSelect } },
+      orderBy: { lastReportedAt: 'desc' },
+    }),
     prisma.appLog.groupBy({ by: ['service'], where: { level: 'ERROR', timestamp: { gte: startOfToday } }, _count: { _all: true } }),
+    prisma.alert.findMany({
+      where: { status: { not: '已解决' }, isSuppressed: false, service: { not: '' } },
+      select: { id: true, level: true, service: true, source: true, relatedType: true, fingerprint: true, metadata: true, createdAt: true, updatedAt: true },
+      orderBy: { updatedAt: 'desc' },
+    }),
     prisma.alert.findMany({ where: { status: { not: '已解决' }, isSuppressed: false }, orderBy: { updatedAt: 'desc' }, take: 5 }),
     // 扩展统计
     prisma.batchJob.findMany({ select: { status: true } }),
@@ -75,34 +231,177 @@ export async function getDashboardData() {
   const alertScore = clampScore(100 - activeAlerts * 8)
   const errorCountByService = Object.fromEntries(errorLogs.map((row) => [row.service, row._count._all]))
 
-  const serviceRows = [
-    ...hostServices.map((service) => ({ name: service.name, status: service.status, lastReportedAt: service.lastReportedAt })),
-    ...hostContainers.map((container) => ({ name: container.name, status: container.state, lastReportedAt: container.lastReportedAt })),
-  ]
-  const servicesByName = new Map<string, typeof serviceRows>()
-  for (const service of serviceRows) {
-    const list = servicesByName.get(service.name) ?? []
-    list.push(service)
-    servicesByName.set(service.name, list)
+  const servicesByName = new Map<string, ServiceAggregate>()
+  for (const service of hostServices) {
+    const aggregate = ensureService(servicesByName, service.name)
+    if (!aggregate) continue
+    const row: ServiceHostRow = {
+      hostId: service.hostId,
+      ip: service.host.ip,
+      hostname: service.host.hostname,
+      hostStatus: service.host.status,
+      status: service.status,
+      statusBucket: normalizeServiceStatus(service.status),
+      port: service.port,
+      source: service.source,
+      kind: 'service',
+      lastReportedAt: service.lastReportedAt,
+      activeAlerts: 0,
+    }
+    aggregate.hosts.push(row)
   }
 
-  const services = Array.from(servicesByName.entries()).map(([name, rows]) => {
-    const errors = errorCountByService[name] ?? 0
-    return {
-      key: name,
-      name,
-      status: serviceStatus(rows.map((row) => row.status), errors),
-      instances: rows.length,
-      qps: 0,
-      errorRate: errors ? `${errors} 条错误` : '0%',
+  for (const container of hostContainers) {
+    const aggregate = ensureService(servicesByName, container.name)
+    if (!aggregate) continue
+    const row: ServiceHostRow = {
+      hostId: container.hostId,
+      ip: container.host.ip,
+      hostname: container.host.hostname,
+      hostStatus: container.host.status,
+      status: container.state || container.status,
+      statusBucket: normalizeServiceStatus(container.state || container.status),
+      port: null,
+      source: 'container',
+      kind: 'container',
+      lastReportedAt: container.lastReportedAt,
+      activeAlerts: 0,
     }
-  }).sort((left, right) => right.instances - left.instances || left.name.localeCompare(right.name)).slice(0, 8)
+    aggregate.hosts.push(row)
+  }
 
-  const reportedServiceCount = serviceRows.length
-  const abnormalServiceCount = serviceRows.filter((service) => serviceStatus([service.status], errorCountByService[service.name] ?? 0) === '异常').length
-  const warningServiceCount = serviceRows.filter((service) => serviceStatus([service.status], errorCountByService[service.name] ?? 0) === '警告').length
-  const serviceHealthRate = reportedServiceCount ? ((reportedServiceCount - abnormalServiceCount - warningServiceCount * 0.5) / reportedServiceCount) * 100 : 100
-  const healthValue = clampScore(hostOnlineRate * 0.3 + serviceHealthRate * 0.25 + resourceScore * 0.25 + alertScore * 0.2)
+  for (const [name, count] of Object.entries(errorCountByService)) {
+    const aggregate = ensureService(servicesByName, name)
+    if (aggregate) aggregate.errorLogsToday = count
+  }
+
+  for (const alert of serviceAlerts) {
+    const aggregate = ensureService(servicesByName, alert.service)
+    if (!aggregate) continue
+    aggregate.activeAlerts += 1
+    const key = levelKey(alert.level)
+    aggregate[key] += 1
+    const kind = classifyServiceAlert(alert)
+    if (kind === 'log') aggregate.logAlerts += 1
+    else if (kind === 'status') aggregate.statusAlerts += 1
+    else aggregate.otherAlerts += 1
+    aggregate.latestAlertAt = latestDate([aggregate.latestAlertAt, alert.updatedAt, alert.createdAt])
+
+    const hostIds = hostIdsFromAlertMetadata(alert.metadata)
+    for (const hostId of hostIds) {
+      aggregate.affectedHostIds.add(hostId)
+      const row = aggregate.hosts.find((host) => host.hostId === hostId)
+      if (row) row.activeAlerts += 1
+    }
+  }
+
+  const uploadedServiceInstanceCount = hostServices.length
+  const uniqueServiceNameCount = new Set(hostServices.map((service) => normalizeServiceName(service.name)).filter(Boolean)).size
+  const containerInstanceTotal = hostContainers.length
+
+  const services = Array.from(servicesByName.values()).map((service) => {
+    const serviceHosts = service.hosts.filter((host) => host.kind === 'service')
+    const containerHosts = service.hosts.filter((host) => host.kind === 'container')
+    const countByBucket = (rows: ServiceHostRow[], bucket: ServiceStatusBucket) => rows.filter((host) => host.statusBucket === bucket).length
+    const healthyInstances = countByBucket(service.hosts, 'healthy')
+    const warningInstances = countByBucket(service.hosts, 'warning')
+    const abnormalInstances = countByBucket(service.hosts, 'abnormal')
+    const unknownInstances = countByBucket(service.hosts, 'unknown')
+    const healthyServiceInstanceCount = countByBucket(serviceHosts, 'healthy')
+    const warningServiceInstanceCount = countByBucket(serviceHosts, 'warning')
+    const abnormalServiceInstanceCount = countByBucket(serviceHosts, 'abnormal')
+    const unknownServiceInstanceCount = countByBucket(serviceHosts, 'unknown')
+    const healthyContainerInstanceCount = countByBucket(containerHosts, 'healthy')
+    const warningContainerInstanceCount = countByBucket(containerHosts, 'warning')
+    const abnormalContainerInstanceCount = countByBucket(containerHosts, 'abnormal')
+    const unknownContainerInstanceCount = countByBucket(containerHosts, 'unknown')
+    const totalInstanceCount = service.hosts.length
+    const affectedHostIds = new Set(service.affectedHostIds)
+    for (const host of service.hosts) if (host.statusBucket !== 'healthy' || host.activeAlerts > 0) affectedHostIds.add(host.hostId)
+    const healthScore = computeServiceHealthScore(service)
+    const status = aggregateStatus(service, healthScore)
+    const lastReportedAt = latestDate(service.hosts.map((host) => host.lastReportedAt))
+    return {
+      key: service.key,
+      name: service.name,
+      status,
+      healthScore,
+      instances: totalInstanceCount,
+      totalInstanceCount,
+      serviceInstanceCount: serviceHosts.length,
+      healthyServiceInstanceCount,
+      warningServiceInstanceCount,
+      abnormalServiceInstanceCount,
+      unknownServiceInstanceCount,
+      containerInstanceCount: containerHosts.length,
+      healthyContainerInstanceCount,
+      warningContainerInstanceCount,
+      abnormalContainerInstanceCount,
+      unknownContainerInstanceCount,
+      healthyInstances,
+      warningInstances,
+      abnormalInstances,
+      unknownInstances,
+      availability: `${healthyInstances}/${totalInstanceCount}`,
+      hostCount: new Set(service.hosts.map((host) => host.hostId)).size,
+      affectedHosts: affectedHostIds.size,
+      activeAlerts: service.activeAlerts,
+      criticalAlerts: service.criticalAlerts,
+      severeAlerts: service.severeAlerts,
+      warningAlerts: service.warningAlerts,
+      infoAlerts: service.infoAlerts,
+      logAlerts: service.logAlerts,
+      statusAlerts: service.statusAlerts,
+      otherAlerts: service.otherAlerts,
+      errorLogsToday: service.errorLogsToday,
+      qps: 0,
+      errorRate: service.errorLogsToday ? `${service.errorLogsToday} 条错误` : '0%',
+      lastReportedAt: shanghaiTime(lastReportedAt ?? null),
+      latestAlertAt: shanghaiTime(service.latestAlertAt ?? null),
+      hosts: service.hosts
+        .sort((left, right) => (right.activeAlerts - left.activeAlerts) || left.hostname.localeCompare(right.hostname))
+        .map((host) => ({
+          ...host,
+          lastReportedAt: shanghaiTime(host.lastReportedAt),
+        })),
+    }
+  }).sort((left, right) => {
+    const rank = { '异常': 0, '警告': 1, '健康': 2 }
+    return rank[left.status] - rank[right.status]
+      || right.activeAlerts - left.activeAlerts
+      || right.abnormalInstances - left.abnormalInstances
+      || right.instances - left.instances
+      || left.name.localeCompare(right.name)
+  })
+
+  const aggregateNameCount = services.length
+  const reportedInstanceCount = uploadedServiceInstanceCount + containerInstanceTotal
+  const serviceCount = uniqueServiceNameCount
+  const instanceCount = uploadedServiceInstanceCount
+  const healthyServiceCount = services.filter((service) => service.status === '健康').length
+  const warningServiceCount = services.filter((service) => service.status === '警告').length
+  const abnormalServiceCount = services.filter((service) => service.status === '异常').length
+  const serviceWeightTotal = services.reduce((sum, service) => sum + Math.max(1, Math.min(service.instances || 1, 10)), 0)
+  const serviceHealthScore = serviceWeightTotal
+    ? services.reduce((sum, service) => sum + service.healthScore * Math.max(1, Math.min(service.instances || 1, 10)), 0) / serviceWeightTotal
+    : 100
+  const serviceHealth = {
+    score: clampScore(serviceHealthScore),
+    serviceCount,
+    instanceCount,
+    uniqueServiceNameCount,
+    uploadedServiceInstanceCount,
+    containerInstanceCount: containerInstanceTotal,
+    aggregateNameCount,
+    reportedInstanceCount,
+    healthyServiceCount,
+    warningServiceCount,
+    abnormalServiceCount,
+    activeServiceAlertCount: services.reduce((sum, service) => sum + service.activeAlerts, 0),
+    logAlertCount: services.reduce((sum, service) => sum + service.logAlerts, 0),
+    statusAlertCount: services.reduce((sum, service) => sum + service.statusAlerts, 0),
+  }
+  const healthValue = clampScore(hostOnlineRate * 0.25 + serviceHealth.score * 0.35 + resourceScore * 0.2 + alertScore * 0.2)
 
   const trendCounts = new Map(trendDates().map((date) => [dateKey(date), 0]))
   for (const alert of trendAlerts) {
@@ -117,9 +416,9 @@ export async function getDashboardData() {
 
   return {
     metrics: [
-      { key: 'health', title: '系统健康度', value: percent(healthValue), trend: '主机30% / 服务容器25% / 资源25% / 告警20%', trendType: healthValue >= 90 ? 'up' : 'danger', color: healthValue >= 90 ? '#52c41a' : '#ff4d4f' },
+      { key: 'health', title: '系统健康度', value: percent(healthValue), trend: '主机25% / 服务可用性35% / 资源20% / 告警20%', trendType: scoreTrendType(healthValue), color: healthValue >= 90 ? '#52c41a' : healthValue >= 70 ? '#faad14' : '#ff4d4f' },
       { key: 'alerts', title: '今日告警', value: todayAlerts, trend: `未解决 ${activeAlerts} 条`, trendType: activeAlerts ? 'danger' : 'down', color: '#ff4d4f' },
-      { key: 'services', title: '上报服务', value: reportedServiceCount, trend: `${abnormalServiceCount} 个异常 / ${warningServiceCount} 个警告`, trendType: abnormalServiceCount ? 'danger' : 'up', color: '#faad14' },
+      { key: 'services', title: '服务可用性', value: percent(serviceHealth.score), trend: `服务名 ${uniqueServiceNameCount} / 服务实例 ${uploadedServiceInstanceCount} / 容器 ${containerInstanceTotal}`, trendType: scoreTrendType(serviceHealth.score), color: serviceHealth.score >= 90 ? '#52c41a' : serviceHealth.score >= 70 ? '#faad14' : '#ff4d4f' },
       { key: 'availability', title: '可用性', value: percent(hostOnlineRate, 2), trend: `${onlineHosts}/${hosts.length || 0} 主机在线`, trendType: hostOnlineRate >= 90 ? 'up' : 'danger', color: '#1677ff' },
       { key: 'batchJobs', title: '批处理任务', value: batchJobs.length, trend: `${batchSuccess} 成功 / ${batchFailed} 失败`, trendType: batchFailed ? 'danger' : 'up', color: '#722ed1' },
     ],
@@ -129,6 +428,7 @@ export async function getDashboardData() {
       { name: '磁盘使用率', value: avgDisk, status: avgDisk > 85 ? 'exception' : 'normal' },
     ],
     services,
+    serviceHealth,
     alertTrend: Array.from(trendCounts.entries()).map(([date, value]) => ({ date, value })),
     alerts: recentAlerts.map((alert) => ({
       id: alert.id,

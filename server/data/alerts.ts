@@ -37,7 +37,7 @@ function queryWhere(filters: AlertFilters): Prisma.AlertWhereInput {
 
   return {
     level: filters.level,
-    status: filters.status,
+    status: filters.status ?? (filters.active ? { not: '已解决' } : undefined),
     service: filters.service,
     source: filters.source,
     isSuppressed: boolFilter(filters.isSuppressed) ?? (filters.includeSuppressed ? undefined : false),

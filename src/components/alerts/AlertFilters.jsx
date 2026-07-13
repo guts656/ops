@@ -13,11 +13,17 @@ export default function AlertFilters({ filters, onChange, onSearch, loading }) {
           <Form.Item label="关键字" style={{ minWidth: 220, marginBottom: 0 }}>
             <Input.Search allowClear placeholder="搜索标题、内容、服务、来源" value={filters.keyword} onChange={(event) => update({ keyword: event.target.value || undefined })} onSearch={() => onSearch?.()} />
           </Form.Item>
+          <Form.Item label="服务" style={{ minWidth: 180, marginBottom: 0 }}>
+            <Input allowClear placeholder="如 tomcat" value={filters.service} onChange={(event) => update({ service: event.target.value || undefined })} onPressEnter={() => onSearch?.()} />
+          </Form.Item>
           <Form.Item label="级别" style={{ minWidth: 130, marginBottom: 0 }}>
             <Select allowClear placeholder="全部级别" value={filters.level} onChange={(level) => update({ level })} options={levels.map((level) => ({ label: level, value: level }))} />
           </Form.Item>
           <Form.Item label="状态" style={{ minWidth: 130, marginBottom: 0 }}>
             <Select allowClear placeholder="全部状态" value={filters.status} onChange={(status) => update({ status })} options={statuses.map((status) => ({ label: status, value: status }))} />
+          </Form.Item>
+          <Form.Item label="仅未解决" style={{ marginBottom: 0 }}>
+            <Switch checked={Boolean(filters.active)} onChange={(active) => update({ active: active || undefined })} />
           </Form.Item>
           <Form.Item label="来源" style={{ minWidth: 160, marginBottom: 0 }}>
             <Input allowClear placeholder="如 日志监控" value={filters.source} onChange={(event) => update({ source: event.target.value || undefined })} />
@@ -26,7 +32,7 @@ export default function AlertFilters({ filters, onChange, onSearch, loading }) {
             <Switch checked={Boolean(filters.includeSuppressed)} onChange={(includeSuppressed) => update({ includeSuppressed })} />
           </Form.Item>
           <Button type="primary" loading={loading} onClick={() => onSearch?.()}>查询</Button>
-          <Button onClick={() => { onChange?.({ includeSuppressed: false }); setTimeout(() => onSearch?.(), 0) }}>重置</Button>
+          <Button onClick={() => { onChange?.({ includeSuppressed: false, service: undefined, keyword: undefined, level: undefined, status: undefined, active: undefined, source: undefined }); setTimeout(() => onSearch?.(), 0) }}>重置</Button>
         </Flex>
       </Form>
     </Card>

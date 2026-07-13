@@ -22,6 +22,7 @@ const alertFiltersSchema = z.object({
   service: z.string().optional(),
   keyword: z.string().optional(),
   source: z.string().optional(),
+  active: boolish,
   includeSuppressed: boolish,
   isSuppressed: boolish,
   startTime: z.string().optional(),

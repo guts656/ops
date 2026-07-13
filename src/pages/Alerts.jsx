@@ -1,5 +1,6 @@
 import { Card, Flex, Modal, Spin, Tabs, Typography, message } from 'antd'
 import { useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import AlertList from '../components/AlertList'
 import AlertDetailDrawer from '../components/alerts/AlertDetailDrawer'
 import AlertFilters from '../components/alerts/AlertFilters'
@@ -8,7 +9,23 @@ import AlertSummaryCards from '../components/alerts/AlertSummaryCards'
 import { useAlertStore } from '../stores/alertStore'
 import { getRealtimeSocket } from '../utils/realtime'
 
+function filtersFromSearchParams(searchParams) {
+  const filters = { includeSuppressed: false }
+  const textKeys = ['service', 'status', 'level', 'source', 'keyword']
+  for (const key of textKeys) {
+    const value = searchParams.get(key)
+    if (value) filters[key] = value
+  }
+  const active = searchParams.get('active')
+  if (active === 'true') filters.active = true
+  if (active === 'false') filters.active = false
+  const includeSuppressed = searchParams.get('includeSuppressed')
+  if (includeSuppressed === 'true') filters.includeSuppressed = true
+  return filters
+}
+
 export default function Alerts() {
+  const [searchParams] = useSearchParams()
   const {
     alerts,
     filters,
@@ -36,8 +53,9 @@ export default function Alerts() {
   } = useAlertStore()
 
   useEffect(() => {
+    const initialFilters = filtersFromSearchParams(searchParams)
     const store = useAlertStore.getState()
-    void Promise.all([store.load(), store.refreshOverview(), store.loadSuppressedAlerts()])
+    void Promise.all([store.load(initialFilters), store.refreshOverview(), store.loadSuppressedAlerts()])
     const socket = getRealtimeSocket()
     const refresh = () => {
       const current = useAlertStore.getState()
@@ -52,7 +70,7 @@ export default function Alerts() {
       socket?.off('alert:updated', refresh)
       socket?.off('alert:resolved', refresh)
     }
-  }, [])
+  }, [searchParams])
 
   const handleSuppress = async (input) => {
     await suppressFingerprint(input)
