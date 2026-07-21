@@ -22,6 +22,7 @@ import Inspection from './pages/Inspection'
 import Login from './pages/Login'
 import LogMonitoring from './pages/LogMonitoring'
 import LogQuery from './pages/LogQuery'
+import Xm2Converter from './pages/Xm2Converter'
 import SelfHealingRules from './pages/SelfHealingRules'
 import ServiceTopology from './pages/ServiceTopology'
 import Settings from './pages/Settings'
@@ -105,6 +106,7 @@ function MainLayout() {
             <Route path="/alert-handling" element={<ProtectedRoute permission={PERMISSIONS.ALERT_HANDLING_VIEW}><AlertHandlingRules /></ProtectedRoute>} />
             <Route path="/logs" element={<ProtectedRoute permission={PERMISSIONS.LOGS_VIEW}><LogQuery /></ProtectedRoute>} />
             <Route path="/log-monitoring" element={<ProtectedRoute permission={PERMISSIONS.LOGS_VIEW}><LogMonitoring /></ProtectedRoute>} />
+            <Route path="/xm2-convert" element={<ProtectedRoute permission={PERMISSIONS.LOGS_MANAGE}><Xm2Converter /></ProtectedRoute>} />
             <Route path="/topology" element={<ProtectedRoute permission={PERMISSIONS.TOPOLOGY_VIEW}><ServiceTopology /></ProtectedRoute>} />
             <Route path="/hosts" element={<ProtectedRoute permission={PERMISSIONS.HOSTS_VIEW}><Hosts /></ProtectedRoute>} />
             <Route path="/hosts/:id" element={<ProtectedRoute permission={PERMISSIONS.HOSTS_VIEW}><HostDetail /></ProtectedRoute>} />

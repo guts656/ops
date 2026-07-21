@@ -1,4 +1,4 @@
-import type { LogCollectionRule, LogCollectionRuleInput, LogFilters, LogMonitorAlertRecord, LogMonitorRule, LogMonitorRuleInput, LogQueryResult } from '../types/log'
+import type { LogCollectionRule, LogCollectionRuleInput, LogFilters, LogMonitorAlertRecord, LogMonitorHostScope, LogMonitorRule, LogMonitorRuleInput, LogQueryResult, Xm2ConvertPreviewResult, Xm2ImportResult } from '../types/log'
 import { http } from './http'
 
 export async function queryLogs(filters: LogFilters): Promise<LogQueryResult> {
@@ -55,5 +55,15 @@ export async function evaluateLogMonitorRule(id: string) {
 
 export async function listLogMonitorAlerts(ruleId?: string): Promise<LogMonitorAlertRecord[]> {
   const response = await http.get<{ data: LogMonitorAlertRecord[] }>('/logs/monitor-alerts', { params: { ruleId } })
+  return response.data.data
+}
+
+export async function previewXm2MonitorJson(values: { rawJson?: string; content?: unknown }): Promise<Xm2ConvertPreviewResult> {
+  const response = await http.post<{ data: Xm2ConvertPreviewResult }>('/logs/xm2-convert/preview', values)
+  return response.data.data
+}
+
+export async function importXm2MonitorRules(values: { rules: LogMonitorRuleInput[]; hostScope: LogMonitorHostScope; hostId?: string; hostIds?: string[]; hostGroup?: string }): Promise<Xm2ImportResult> {
+  const response = await http.post<{ data: Xm2ImportResult }>('/logs/xm2-convert/import', values)
   return response.data.data
 }

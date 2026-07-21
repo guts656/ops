@@ -6,6 +6,7 @@ import { createLogMonitorRule, deleteLogMonitorRule, evaluateLogMonitorRule, get
 import { getLogServices, queryLogs } from '../data/logs.ts'
 import { authenticate } from '../middleware/authenticate.ts'
 import { requirePermission } from '../middleware/requirePermission.ts'
+import { convertXm2MonitorJson } from '../services/xm2MonitorJsonConverter.ts'
 
 const logFiltersSchema = z.object({
   keyword: z.string().optional(),
@@ -99,6 +100,36 @@ function normalizeMonitorRuleInput(input: z.infer<typeof monitorRuleSchema>) {
   return { ...input, hostScope, hostId: undefined, hostIds: [], hostGroup: input.hostGroup }
 }
 
+const xm2PreviewSchema = z.object({
+  rawJson: z.string().max(8 * 1024 * 1024).optional(),
+  content: z.unknown().optional(),
+}).superRefine((value, ctx) => {
+  if (!value.rawJson && value.content === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['rawJson'], message: '请上传或粘贴 xm2 monitor.json 内容' })
+})
+
+const xm2ImportSchema = z.object({
+  rules: z.array(monitorRuleSchema).min(1).max(200),
+  hostScope: hostScopeSchema.default('all'),
+  hostId: z.string().trim().optional(),
+  hostIds: z.array(z.string().trim().min(1)).max(200).optional(),
+  hostGroup: z.string().trim().optional(),
+})
+
+function xm2Input(value: z.infer<typeof xm2PreviewSchema>) {
+  if (value.rawJson) {
+    try {
+      return JSON.parse(value.rawJson)
+    } catch {
+      throw new Error('xm2 monitor.json 不是有效 JSON')
+    }
+  }
+  return value.content
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : '导入失败'
+}
+
 const router = Router()
 
 router.use(authenticate)
@@ -148,6 +179,63 @@ router.delete('/collection-rules/:id', requirePermission(PERMISSIONS.HOSTS_MANAG
 router.get('/monitor-rules', requirePermission(PERMISSIONS.LOGS_VIEW), async (_req, res, next) => {
   try {
     res.json({ data: await listLogMonitorRules() })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/xm2-convert/preview', requirePermission(PERMISSIONS.LOGS_MANAGE), async (req, res, next) => {
+  try {
+    const input = xm2Input(xm2PreviewSchema.parse(req.body))
+    const result = convertXm2MonitorJson(input)
+    const candidates = []
+    const skipped = [...result.skipped]
+
+    for (const candidate of result.candidates) {
+      const parsed = monitorRuleSchema.safeParse(candidate.rule)
+      if (parsed.success) candidates.push({ ...candidate, rule: parsed.data })
+      else skipped.push({
+        legacyIndex: candidate.legacyIndex,
+        legacyKey: candidate.legacyKey,
+        legacyName: candidate.legacyName,
+        type: 'fileContent',
+        mode: 'include',
+        source: candidate.sourceFile,
+        word: candidate.rule.keywords[0],
+        reason: parsed.error.issues.map((issue) => issue.message).join('；') || '转换后规则校验失败',
+      })
+    }
+
+    res.json({ data: { summary: { total: result.summary.total, convertible: candidates.length, skipped: skipped.length, invalid: skipped.length - result.skipped.length }, candidates, skipped } })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/xm2-convert/import', requirePermission(PERMISSIONS.LOGS_MANAGE), async (req, res, next) => {
+  try {
+    const input = xm2ImportSchema.parse(req.body)
+    const imported = []
+    const failed = []
+    const hostIds = Array.from(new Set((input.hostIds ?? []).filter(Boolean)))
+
+    for (const [index, rule] of input.rules.entries()) {
+      try {
+        const payload = normalizeMonitorRuleInput(monitorRuleSchema.parse({
+          ...rule,
+          enabled: false,
+          hostScope: input.hostScope,
+          hostId: input.hostScope === 'single' ? input.hostId || hostIds[0] : undefined,
+          hostIds: input.hostScope === 'multiple' ? hostIds : input.hostScope === 'single' && (input.hostId || hostIds[0]) ? [input.hostId || hostIds[0]] : [],
+          hostGroup: input.hostScope === 'group' ? input.hostGroup : undefined,
+        }))
+        imported.push(await createLogMonitorRule(payload))
+      } catch (error) {
+        failed.push({ index, name: rule.name, reason: errorMessage(error) })
+      }
+    }
+
+    res.json({ data: { imported, failed } })
   } catch (error) {
     next(error)
   }

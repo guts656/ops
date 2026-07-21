@@ -153,3 +153,44 @@ export interface LogMonitorAlertRecord {
   notificationResults: string[]
   createdAt: string
 }
+
+export interface Xm2SkippedItem {
+  legacyIndex: number
+  legacyKey?: string
+  legacyName?: string
+  type?: string
+  mode?: string
+  source?: string
+  word?: string
+  reason: string
+}
+
+export interface Xm2ConvertedRulePreview {
+  key: string
+  legacyIndex: number
+  legacyKey?: string
+  legacyName?: string
+  sourceFile: string
+  rule: LogMonitorRuleInput
+  warnings: string[]
+}
+
+export interface Xm2ConvertPreviewResult {
+  summary: {
+    total: number
+    convertible: number
+    skipped: number
+    invalid: number
+  }
+  candidates: Xm2ConvertedRulePreview[]
+  skipped: Xm2SkippedItem[]
+}
+
+export interface Xm2ImportResult {
+  imported: LogMonitorRule[]
+  failed: Array<{
+    index: number
+    name?: string
+    reason: string
+  }>
+}
