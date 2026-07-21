@@ -5,9 +5,10 @@ import { shanghaiTime } from '../utils/time'
 
 type LogRow = NonNullable<Awaited<ReturnType<typeof prisma.appLog.findFirst>>>
 
-const DEFAULT_LOG_RETENTION_DAYS = 7
+const DEFAULT_LOG_RETENTION_DAYS = 2
 const DAY_MS = 24 * 60 * 60 * 1000
 const MAX_FUTURE_LOG_MS = 5 * 60 * 1000
+const DEFAULT_QUERY_WINDOW_MS = 60 * 60 * 1000
 
 function toLog(log: LogRow): AppLog {
   return {
@@ -108,29 +109,31 @@ export async function queryLogs(filters: LogFilters) {
   const sourceFilter = sourceWhere(filters.source)
   if (sourceFilter) clauses.push(sourceFilter)
   if (keyword) clauses.push({ OR: [{ traceId: { contains: keyword, mode: 'insensitive' } }, { message: { contains: keyword, mode: 'insensitive' } }, { service: { contains: keyword, mode: 'insensitive' } }] })
+  const now = new Date()
   const where: Prisma.AppLogWhereInput = {
     service: serviceFilter,
     level: filters.level,
     hostId: filters.hostId,
     timestamp: {
-      gte: filters.startTime ? new Date(filters.startTime) : logRetentionCutoffUtc(),
+      gte: filters.startTime ? new Date(filters.startTime) : new Date(Math.max(logRetentionCutoffUtc(now).getTime(), now.getTime() - DEFAULT_QUERY_WINDOW_MS)),
       lte: filters.endTime ? new Date(filters.endTime) : undefined,
     },
     AND: clauses.length ? clauses : undefined,
   }
 
-  const [total, data] = await prisma.$transaction([
-    prisma.appLog.count({ where }),
-    prisma.appLog.findMany({ where, orderBy: { timestamp: 'desc' }, skip: (page - 1) * pageSize, take: pageSize }),
-  ])
+  const rows = await prisma.appLog.findMany({ where, orderBy: { timestamp: 'desc' }, skip: (page - 1) * pageSize, take: pageSize + 1 })
+  const hasMore = rows.length > pageSize
+  const data = hasMore ? rows.slice(0, pageSize) : rows
+  const total = hasMore ? page * pageSize + 1 : (page - 1) * pageSize + data.length
 
   return { data: data.map(toLog), total, page, pageSize }
 }
 
 export async function getLogServices() {
+  const cutoff = new Date(Math.max(logRetentionCutoffUtc().getTime(), Date.now() - DEFAULT_QUERY_WINDOW_MS))
   const [logRows, containers] = await Promise.all([
-    prisma.appLog.groupBy({ by: ['service'], orderBy: { service: 'asc' } }),
-    prisma.hostContainer.findMany({ where: { isCurrent: true }, select: { name: true }, orderBy: { name: 'asc' } }),
+    prisma.appLog.findMany({ where: { timestamp: { gte: cutoff } }, distinct: ['service'], select: { service: true }, orderBy: { service: 'asc' }, take: 500 }),
+    prisma.hostContainer.findMany({ where: { isCurrent: true }, select: { name: true }, orderBy: { name: 'asc' }, take: 500 }),
   ])
   const values = new Set(logRows.map((row) => row.service))
   for (const container of containers) values.add(`container:${container.name}`)

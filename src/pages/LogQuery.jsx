@@ -63,7 +63,12 @@ export default function LogQuery() {
   useEffect(() => {
     async function init() {
       form.setFieldsValue({ service: initialService, hostId: initialHostId })
-      const [nextServices, nextHosts] = await Promise.all([getLogServices(), queryHosts({}), load(1, 20)])
+      void load(1, 20)
+
+      const [nextServices, nextHosts] = await Promise.all([
+        getLogServices().catch(() => []),
+        queryHosts({}).catch(() => []),
+      ])
       setServices(nextServices)
       setHosts(nextHosts)
     }
