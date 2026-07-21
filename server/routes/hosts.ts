@@ -20,6 +20,8 @@ const hostFiltersSchema = z.object({
   group: z.string().optional(),
 })
 
+const hostMarketTypeSchema = z.enum(['CN_INTERNAL', 'GLOBAL_EXTERNAL', 'ALWAYS_ON'])
+
 const addHostSchema = z.object({
   ips: z.string().min(1),
   hostname: z.string().optional(),
@@ -31,6 +33,7 @@ const addHostSchema = z.object({
   privateKey: z.string().optional(),
   sshPort: z.coerce.number().min(1).max(65535),
   group: z.string().min(1),
+  marketType: hostMarketTypeSchema.optional(),
   tags: z.array(z.string()).optional(),
   changeNo: z.string().optional(),
 })
@@ -41,6 +44,7 @@ const editHostSchema = z.object({
   osVersion: z.string().min(1),
   sshPort: z.coerce.number().min(1).max(65535),
   group: z.string().min(1),
+  marketType: hostMarketTypeSchema.default('CN_INTERNAL'),
   tags: z.array(z.string()).default([]),
 })
 const testConnectionSchema = addHostSchema.partial().extend({ ips: z.string().optional() })

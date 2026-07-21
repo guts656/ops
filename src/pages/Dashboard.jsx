@@ -13,7 +13,7 @@ import {
   ThunderboltOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Card, Col, Empty, Progress, Row, Skeleton, Space, Table, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Col, Empty, Input, Progress, Row, Skeleton, Space, Table, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getDashboardData } from '../api/dashboard'
@@ -120,6 +120,7 @@ export default function Dashboard() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [serviceKeyword, setServiceKeyword] = useState('')
   const navigate = useNavigate()
 
   const loadDashboard = useCallback(() => {
@@ -185,6 +186,19 @@ export default function Dashboard() {
   ]
 
   const serviceHealth = data?.serviceHealth || {}
+  const serviceKeywordText = serviceKeyword.trim().toLowerCase()
+  const filteredServices = useMemo(() => {
+    const services = data?.services || []
+    if (!serviceKeywordText) return services
+    return services.filter((service) => {
+      const fields = [
+        service.name,
+        service.status,
+        ...(service.hosts || []).flatMap((host) => [host.hostname, host.ip, host.status, host.kind, host.source]),
+      ]
+      return fields.some((field) => String(field || '').toLowerCase().includes(serviceKeywordText))
+    })
+  }, [data, serviceKeywordText])
 
   const serviceSummaryItems = [
     { label: '服务名', value: serviceHealth.uniqueServiceNameCount ?? 0, color: 'blue' },
@@ -578,13 +592,23 @@ export default function Dashboard() {
           >
             {data?.services?.length > 0 ? (
               <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                <Space size={[8, 8]} wrap>
-                  {serviceSummaryItems.map((item) => (
-                    <Tag key={item.label} color={item.color}>{item.label}：{item.value}</Tag>
-                  ))}
+                <Space style={{ width: '100%', justifyContent: 'space-between' }} align="start" wrap>
+                  <Space size={[8, 8]} wrap>
+                    {serviceSummaryItems.map((item) => (
+                      <Tag key={item.label} color={item.color}>{item.label}：{item.value}</Tag>
+                    ))}
+                    {serviceKeywordText && <Tag color="default">筛选结果：{filteredServices.length}</Tag>}
+                  </Space>
+                  <Input.Search
+                    allowClear
+                    placeholder="搜索服务、主机、IP、状态"
+                    value={serviceKeyword}
+                    onChange={(event) => setServiceKeyword(event.target.value)}
+                    style={{ width: 260 }}
+                  />
                 </Space>
                 <Table
-                  dataSource={data.services}
+                  dataSource={filteredServices}
                   columns={serviceColumns}
                   rowKey="key"
                   pagination={{ pageSize: 6, showSizeChanger: false }}

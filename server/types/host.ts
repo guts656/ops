@@ -1,6 +1,7 @@
 export type HostStatus = '在线' | '离线' | '纳管中'
 export type OsType = 'Linux' | 'Windows'
 export type AuthType = '密码' | '密钥'
+export type HostMarketType = 'CN_INTERNAL' | 'GLOBAL_EXTERNAL' | 'ALWAYS_ON'
 export type HostAction = '新增主机' | '测试连接' | '编辑主机' | '删除主机' | '重新纳管' | '刷新主机信息' | '拉取主机指标' | '启用自动Pull' | '停用自动Pull' | '重新安装Agent' | '重启Agent' | '诊断Agent回连' | '修复Agent回连路由' | '启动服务' | '停止服务' | '重启服务' | '删除服务记录' | '进入维护' | '退出维护' | '查看详情'
 export type AgentJobType = 'test_connection' | 'install_agent' | 'reinstall_agent' | 'restart_agent' | 'remanage' | 'refresh_host_info' | 'pull_host_metrics' | 'diagnose_agent_backend' | 'repair_agent_backend_routes' | 'start_service' | 'stop_service' | 'restart_service'
 export type AgentJobTransport = 'ssh' | 'winrm'
@@ -43,6 +44,7 @@ export interface Host {
   disk: number
   status: HostStatus
   group: string
+  marketType: HostMarketType
   tags: string[]
   agentVersion: string
   agentStatus: '正常' | '异常' | '未安装' | '安装中'
@@ -108,6 +110,7 @@ export interface AddHostFormValues {
   privateKey?: string
   sshPort: number
   group: string
+  marketType?: HostMarketType
   tags?: string[]
   changeNo?: string
 }
@@ -118,6 +121,7 @@ export interface EditHostValues {
   osVersion: string
   sshPort: number
   group: string
+  marketType: HostMarketType
   tags: string[]
 }
 

@@ -17,7 +17,7 @@ export function startLogRetentionScheduler() {
     running = true
     try {
       const result = await runLogRetentionCleanupOnce()
-      if (result.count > 0) console.log(`已清理非当天日志 ${result.count} 条`)
+      if (result.count > 0) console.log(`已清理超过保留期日志 ${result.count} 条`)
     } catch (error) {
       console.error('日志保留清理任务失败', error)
     } finally {

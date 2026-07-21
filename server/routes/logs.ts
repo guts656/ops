@@ -13,8 +13,8 @@ const logFiltersSchema = z.object({
   level: z.enum(['ERROR', 'WARN', 'INFO', 'DEBUG']).optional(),
   hostId: z.string().optional(),
   source: z.string().optional(),
-  startTime: z.string().datetime().optional(),
-  endTime: z.string().datetime().optional(),
+  startTime: z.string().datetime({ offset: true }).optional(),
+  endTime: z.string().datetime({ offset: true }).optional(),
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().max(100).optional(),
 })

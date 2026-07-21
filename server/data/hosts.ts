@@ -11,6 +11,7 @@ import { prisma } from '../db/prisma.ts'
 import { executeHostServiceControl } from '../services/hostServiceControl.ts'
 import { shanghaiTime } from '../utils/time.ts'
 import { evaluateHostResourceMonitorRulesForHost } from './hostResourceMonitorRules.ts'
+import { normalizeMarketType } from '../utils/tradingSessions.ts'
 
 export const hostGroups = ['核心交易区', '支付专区', '风控专区', 'DCORE OFFICE', '测试资源池']
 export const hostTags = ['生产', '数据库', '中间件', '支付', '风控', 'Windows', 'Linux', '高可用', '批处理']
@@ -42,6 +43,14 @@ function nowText() {
 
 function metricRetentionPoints() {
   return Math.max(24, Number(process.env.OPS_AGENT_METRICS_RETENTION_POINTS || 288))
+}
+
+function metricRetentionDays() {
+  return Math.max(1, Number(process.env.OPS_AGENT_METRICS_RETENTION_DAYS || 14))
+}
+
+function metricRetentionCutoff(now = new Date()) {
+  return new Date(now.getTime() - metricRetentionDays() * 24 * 60 * 60 * 1000)
 }
 
 function normalizeAgentBaseUrl(value: string) {
@@ -145,6 +154,7 @@ function toHost(host: HostRow | null): Host | undefined {
     disk: host.disk,
     status: host.status as Host['status'],
     group: host.group,
+    marketType: normalizeMarketType(host.marketType),
     tags: host.tags,
     agentVersion: host.agentVersion,
     agentStatus: host.agentStatus as Host['agentStatus'],
@@ -183,8 +193,8 @@ function toAgentJob(job: HostAgentJobRow): AgentJob {
     transport: job.transport as AgentJobTransport,
     status: job.status as AgentJobStatus,
     operator: job.operator,
-    startedAt: isoText(job.startedAt),
-    completedAt: job.completedAt ? isoText(job.completedAt) : undefined,
+    startedAt: shanghaiTime(job.startedAt),
+    completedAt: job.completedAt ? shanghaiTime(job.completedAt) : undefined,
     summary: job.summary,
     stdout: job.stdout,
     stderr: job.stderr,
@@ -209,6 +219,7 @@ function credentialSecret(credentials: HostConnectionValues) {
   return secret
 }
 
+const INSTALL_TIMEOUT_MS = 180000
 const WINDOWS_INSTALL_TIMEOUT_MS = 180000
 
 function transportName(os: Host['os']) {
@@ -217,7 +228,7 @@ function transportName(os: Host['os']) {
 
 function buildInstallConnection(host: Host, credentials: HostConnectionValues): RemoteConnectionInput {
   const connection = buildConnection(host, credentials)
-  return host.os === 'Windows' ? { ...connection, timeoutMs: WINDOWS_INSTALL_TIMEOUT_MS } : connection
+  return { ...connection, timeoutMs: host.os === 'Windows' ? WINDOWS_INSTALL_TIMEOUT_MS : INSTALL_TIMEOUT_MS }
 }
 
 function installJobBaseSummary(host: Host, type: 'install_agent' | 'reinstall_agent', result: AgentOperationResult) {
@@ -365,9 +376,13 @@ async function upsertPullCredential(host: Host, credentials: HostConnectionValue
 async function runInstallJob(host: Host, credentials: HostConnectionValues, operator: string, type: 'install_agent' | 'reinstall_agent', overrides: AgentInstallOverrides = {}) {
   const job = await createAgentJob(host, type, operator)
   assertSupportedCredential(host, credentials)
+  const currentAuth = await prisma.host.findUnique({ where: { id: host.id }, select: { agentTokenHash: true, agentTokenVersion: true } })
   const token = generateAgentToken()
   await prisma.host.update({ where: { id: host.id }, data: { agentTokenHash: hashAgentToken(token), agentTokenVersion: { increment: 1 } } })
   const result = await installRemoteAgent(buildInstallConnection(host, credentials), { hostId: host.id, agentToken: token, apiBaseUrl: overrides.apiBaseUrl ? normalizeAgentBaseUrl(overrides.apiBaseUrl) : agentPublicUrl(), intervalSeconds: agentIntervalSeconds() })
+  if (!result.success && currentAuth?.agentTokenHash) {
+    await prisma.host.update({ where: { id: host.id }, data: { agentTokenHash: currentAuth.agentTokenHash, agentTokenVersion: currentAuth.agentTokenVersion } })
+  }
   const status = result.status === 'success' ? 'success' : 'failed'
   const summary = installJobSummary(host, type, result)
   await finishAgentJob(job.id, status, summary, result.stdout, result.stderr)
@@ -479,8 +494,7 @@ export async function recordHostMetrics(hostId: string, values: { cpu: number; m
       },
     })
     await tx.hostResourcePoint.create({ data: { hostId, time: metricTime(sampledAt), sampledAt, cpu, memory, disk } })
-    const retained = await tx.hostResourcePoint.findMany({ where: { hostId }, orderBy: { sampledAt: 'desc' }, skip: metricRetentionPoints(), select: { id: true } })
-    if (retained.length) await tx.hostResourcePoint.deleteMany({ where: { id: { in: retained.map((point) => point.id) } } })
+    await tx.hostResourcePoint.deleteMany({ where: { hostId, sampledAt: { lt: metricRetentionCutoff(sampledAt) } } })
     return updated
   })
   evaluateHostResourceMonitorRulesForHost(hostId, sampledAt).catch((error) => {
@@ -533,6 +547,7 @@ export async function addHosts(values: AddHostFormValues, operator: string) {
         disk: 0,
         status: '纳管中',
         group: values.group,
+        marketType: normalizeMarketType(values.marketType),
         tags: values.tags ?? [],
         agentVersion: AGENT_VERSION,
         agentStatus: '安装中',
@@ -572,6 +587,7 @@ export async function updateHost(id: string, values: EditHostValues, operator: s
       osVersion: values.osVersion,
       sshPort: values.sshPort,
       group: values.group,
+      marketType: normalizeMarketType(values.marketType),
       tags: values.tags,
     },
   })

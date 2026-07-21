@@ -30,6 +30,7 @@ import { startLogRetentionScheduler } from './services/logRetentionScheduler.ts'
 import { startHealthReportScheduler } from './services/healthReportScheduler.ts'
 import { startSelfHealingEvaluator } from './services/selfHealingEvaluator.ts'
 import { startHostOfflineWatchdog } from './services/hostOfflineWatchdog.ts'
+import { startAgentLogUploadWatchdog } from './services/agentLogUploadWatchdog.ts'
 import { setupRealtime } from './services/realtime.ts'
 import { cleanupLinuxServiceMonitoring } from './data/hostServices.ts'
 
@@ -98,6 +99,7 @@ server.listen(port, () => {
   startHealthReportScheduler()
   startCgiMonitorEvaluator()
   startHostOfflineWatchdog()
+  startAgentLogUploadWatchdog()
   cleanupLinuxServiceMonitoring()
     .then((result) => {
       if (result.services || result.events || result.alertsResolved) console.log('Linux service monitoring cleanup:', result)

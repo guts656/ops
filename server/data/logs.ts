@@ -5,6 +5,10 @@ import { shanghaiTime } from '../utils/time'
 
 type LogRow = NonNullable<Awaited<ReturnType<typeof prisma.appLog.findFirst>>>
 
+const DEFAULT_LOG_RETENTION_DAYS = 7
+const DAY_MS = 24 * 60 * 60 * 1000
+const MAX_FUTURE_LOG_MS = 5 * 60 * 1000
+
 function toLog(log: LogRow): AppLog {
   return {
     id: log.id,
@@ -43,6 +47,12 @@ function pageValue(value: number | undefined, fallback: number, max: number) {
   return Math.min(max, Math.max(1, value))
 }
 
+function retentionDays() {
+  const value = Number(process.env.LOG_RETENTION_DAYS || DEFAULT_LOG_RETENTION_DAYS)
+  if (!Number.isFinite(value) || value < 1) return DEFAULT_LOG_RETENTION_DAYS
+  return Math.floor(value)
+}
+
 function shanghaiDateParts(date = new Date()) {
   const parts = new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai',
@@ -58,14 +68,35 @@ export function startOfShanghaiTodayUtc(now = new Date()) {
   return new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)) - 8 * 60 * 60 * 1000)
 }
 
-function isShanghaiToday(date: Date, now = new Date()) {
-  const current = shanghaiDateParts(now)
-  const target = shanghaiDateParts(date)
-  return current.year === target.year && current.month === target.month && current.day === target.day
+export function logRetentionCutoffUtc(now = new Date()) {
+  return new Date(startOfShanghaiTodayUtc(now).getTime() - (retentionDays() - 1) * DAY_MS)
+}
+
+function expandDateTemplate(value: string | undefined, date = new Date()) {
+  if (!value) return undefined
+  const parts = shanghaiDateParts(date)
+  return value
+    .replaceAll('%Y', parts.year)
+    .replaceAll('%m', parts.month)
+    .replaceAll('%d', parts.day)
+}
+
+function sourceWhere(source: string | undefined, date = new Date()): Prisma.AppLogWhereInput | undefined {
+  const value = expandDateTemplate(source?.trim(), date)
+  if (!value) return undefined
+  if (value === 'file') return { source: { notIn: ['docker', 'eventlog:Application', 'eventlog:System', 'smoke'] } }
+  if (value.endsWith('\\') || value.endsWith('/')) return { source: { startsWith: value } }
+  if (/^[a-zA-Z]:[\\/][^*?]*$/.test(value) && !/\.(log|txt|out|err)$/i.test(value)) {
+    return { OR: [{ source: value }, { source: { startsWith: value.endsWith('\\') ? value : `${value}\\` } }] }
+  }
+  if (value.startsWith('/') && !/\.(log|txt|out|err)$/i.test(value)) {
+    return { OR: [{ source: value }, { source: { startsWith: value.endsWith('/') ? value : `${value}/` } }] }
+  }
+  return { source: value }
 }
 
 export async function cleanupOldAppLogs(now = new Date()) {
-  return prisma.appLog.deleteMany({ where: { timestamp: { lt: startOfShanghaiTodayUtc(now) } } })
+  return prisma.appLog.deleteMany({ where: { timestamp: { lt: logRetentionCutoffUtc(now) } } })
 }
 
 export async function queryLogs(filters: LogFilters) {
@@ -73,19 +104,19 @@ export async function queryLogs(filters: LogFilters) {
   const pageSize = pageValue(filters.pageSize, 20, 100)
   const keyword = filters.keyword?.trim()
   const serviceFilter = filters.service?.startsWith('container:') ? { contains: filters.service, mode: 'insensitive' as const } : filters.service
-  const sourceFilter: Prisma.AppLogWhereInput['source'] = filters.source === 'file'
-    ? { notIn: ['docker', 'eventlog:Application', 'eventlog:System', 'smoke'] }
-    : filters.source
+  const clauses: Prisma.AppLogWhereInput[] = []
+  const sourceFilter = sourceWhere(filters.source)
+  if (sourceFilter) clauses.push(sourceFilter)
+  if (keyword) clauses.push({ OR: [{ traceId: { contains: keyword, mode: 'insensitive' } }, { message: { contains: keyword, mode: 'insensitive' } }, { service: { contains: keyword, mode: 'insensitive' } }] })
   const where: Prisma.AppLogWhereInput = {
     service: serviceFilter,
     level: filters.level,
     hostId: filters.hostId,
-    source: sourceFilter,
     timestamp: {
-      gte: filters.startTime ? new Date(filters.startTime) : startOfShanghaiTodayUtc(),
+      gte: filters.startTime ? new Date(filters.startTime) : logRetentionCutoffUtc(),
       lte: filters.endTime ? new Date(filters.endTime) : undefined,
     },
-    OR: keyword ? [{ traceId: { contains: keyword, mode: 'insensitive' } }, { message: { contains: keyword, mode: 'insensitive' } }, { service: { contains: keyword, mode: 'insensitive' } }] : undefined,
+    AND: clauses.length ? clauses : undefined,
   }
 
   const [total, data] = await prisma.$transaction([
@@ -107,15 +138,15 @@ export async function getLogServices() {
 }
 
 function shouldStoreLog(log: AgentLogInput) {
-  const source = log.source ?? 'agent'
-  if (source.startsWith('eventlog:')) return ['ERROR', 'WARN', 'INFO', 'DEBUG'].includes(log.level)
-  if (source === '/var/log/syslog' || source === '/var/log/messages') return log.level === 'ERROR'
-  return ['ERROR', 'WARN', 'INFO'].includes(log.level)
+  return ['ERROR', 'WARN', 'INFO', 'DEBUG'].includes(log.level)
 }
 
 export async function ingestAgentLogs(hostId: string, logs: AgentLogInput[]) {
+  const now = new Date()
+  const cutoff = logRetentionCutoffUtc(now)
+  const latestAllowed = new Date(now.getTime() + MAX_FUTURE_LOG_MS)
   const rows = logs.filter(shouldStoreLog).map((log, index) => {
-    const timestamp = log.timestamp ? new Date(log.timestamp) : new Date()
+    const timestamp = log.timestamp ? new Date(log.timestamp) : now
     return {
       id: logId(hostId, index),
       time: timeText(timestamp),
@@ -130,11 +161,11 @@ export async function ingestAgentLogs(hostId: string, logs: AgentLogInput[]) {
       rawPayload: log.rawPayload as Prisma.InputJsonValue | undefined,
     }
   })
-  const todayRows = rows.filter((row) => isShanghaiToday(row.timestamp))
-  const traceIds = todayRows.map((row) => row.traceId)
+  const retainedRows = rows.filter((row) => !Number.isNaN(row.timestamp.getTime()) && row.timestamp >= cutoff && row.timestamp <= latestAllowed)
+  const traceIds = retainedRows.map((row) => row.traceId)
   const existing = traceIds.length ? await prisma.appLog.findMany({ where: { hostId, traceId: { in: traceIds } }, select: { traceId: true } }) : []
   const existingTraceIds = new Set(existing.map((row) => row.traceId))
-  const pendingRows = todayRows.filter((row) => !existingTraceIds.has(row.traceId))
+  const pendingRows = retainedRows.filter((row) => !existingTraceIds.has(row.traceId))
   if (pendingRows.length) await prisma.appLog.createMany({ data: pendingRows })
   return pendingRows.length
 }

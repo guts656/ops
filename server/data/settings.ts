@@ -1,5 +1,6 @@
 import type { Prisma } from '../../src/generated/prisma/client'
 import { prisma } from '../db/prisma'
+import { defaultDashboardTradingSessionSettings, normalizeDashboardTradingSessionSettings, type DashboardTradingSessionSettings } from '../utils/tradingSessions.ts'
 
 export type OutboundNotificationChannel = '站内告警' | '企业微信' | '钉钉'
 
@@ -16,6 +17,7 @@ export interface OutboundNotificationSettings {
 }
 
 export const OUTBOUND_NOTIFICATION_SETTING_KEY = 'outboundNotifications'
+export const DASHBOARD_TRADING_SESSION_SETTING_KEY = 'dashboardTradingSessions'
 
 const defaultSettings: OutboundNotificationSettings = {
   defaultChannels: ['站内告警'],
@@ -71,4 +73,19 @@ export async function getGlobalWebhookForChannel(channel: OutboundNotificationCh
   if (channel === '钉钉') return settings.dingTalk.enabled ? settings.dingTalk.webhookUrl?.trim() || undefined : undefined
   if (channel === '企业微信') return settings.weCom.enabled ? settings.weCom.webhookUrl?.trim() || undefined : undefined
   return undefined
+}
+
+export async function getDashboardTradingSessionSettings() {
+  const row = await prisma.appSetting.findUnique({ where: { key: DASHBOARD_TRADING_SESSION_SETTING_KEY } })
+  return normalizeDashboardTradingSessionSettings(row?.value ?? defaultDashboardTradingSessionSettings)
+}
+
+export async function saveDashboardTradingSessionSettings(input: DashboardTradingSessionSettings) {
+  const settings = normalizeDashboardTradingSessionSettings(input)
+  const row = await prisma.appSetting.upsert({
+    where: { key: DASHBOARD_TRADING_SESSION_SETTING_KEY },
+    update: { value: settings as unknown as Prisma.InputJsonValue },
+    create: { key: DASHBOARD_TRADING_SESSION_SETTING_KEY, value: settings as unknown as Prisma.InputJsonValue },
+  })
+  return normalizeDashboardTradingSessionSettings(row.value)
 }

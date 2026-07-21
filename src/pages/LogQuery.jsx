@@ -1,5 +1,5 @@
 import { SearchOutlined } from '@ant-design/icons'
-import { Button, Card, DatePicker, Flex, Form, Input, Select, Table, Tag, Typography } from 'antd'
+import { AutoComplete, Button, Card, DatePicker, Flex, Form, Input, Select, Table, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { queryHosts } from '../api/hosts'
@@ -15,8 +15,8 @@ function toQueryValues(values, page, pageSize) {
     level: values.level || undefined,
     hostId: values.hostId || undefined,
     source: values.source || undefined,
-    startTime: values.range?.[0]?.toDate().toISOString(),
-    endTime: values.range?.[1]?.toDate().toISOString(),
+    startTime: values.range?.[0] ? new Date(`${values.range[0].format('YYYY-MM-DDTHH:mm:ss')}+08:00`).toISOString() : undefined,
+    endTime: values.range?.[1] ? new Date(`${values.range[1].format('YYYY-MM-DDTHH:mm:ss')}+08:00`).toISOString() : undefined,
     page,
     pageSize,
   }
@@ -31,7 +31,7 @@ export default function LogQuery() {
   const [services, setServices] = useState([])
   const [hosts, setHosts] = useState([])
   const [loading, setLoading] = useState(false)
-  const [pagination, setPagination] = useState({ current: 1, pageSize: 8, total: 0 })
+  const [pagination, setPagination] = useState({ current: 1, pageSize: 20, total: 0 })
 
   const serviceOptions = useMemo(
     () => services.map((service) => ({ label: service.startsWith('container:') ? `容器：${service.replace('container:', '')}` : service, value: service })),
@@ -48,7 +48,7 @@ export default function LogQuery() {
     { label: '指定文件路径', value: 'file' },
   ]
 
-  const load = useCallback(async (page = 1, pageSize = 8) => {
+  const load = useCallback(async (page = 1, pageSize = 20) => {
     setLoading(true)
     try {
       const values = form.getFieldsValue()
@@ -63,7 +63,7 @@ export default function LogQuery() {
   useEffect(() => {
     async function init() {
       form.setFieldsValue({ service: initialService, hostId: initialHostId })
-      const [nextServices, nextHosts] = await Promise.all([getLogServices(), queryHosts({}), load(1, 8)])
+      const [nextServices, nextHosts] = await Promise.all([getLogServices(), queryHosts({}), load(1, 20)])
       setServices(nextServices)
       setHosts(nextHosts)
     }
@@ -89,7 +89,7 @@ export default function LogQuery() {
               <Select allowClear placeholder="选择主机" options={hostOptions} showSearch optionFilterProp="label" />
             </Form.Item>
             <Form.Item name="source" label="来源">
-              <Select allowClear placeholder="选择来源" options={sourceOptions} />
+              <AutoComplete allowClear placeholder="选择来源或输入文件路径/目录" options={sourceOptions} filterOption={(input, option) => (option?.label || option?.value || '').toLowerCase().includes(input.toLowerCase())} />
             </Form.Item>
             <Form.Item name="service" label="服务/容器">
               <Select allowClear placeholder="选择服务或容器" options={serviceOptions} showSearch optionFilterProp="label" />
@@ -98,7 +98,7 @@ export default function LogQuery() {
               <Select
                 allowClear
                 placeholder="选择级别"
-                options={['ERROR', 'WARN', 'INFO'].map((level) => ({ label: level, value: level }))}
+                options={['ERROR', 'WARN', 'INFO', 'DEBUG'].map((level) => ({ label: level, value: level }))}
               />
             </Form.Item>
             <Form.Item name="range" label="时间范围">
@@ -131,7 +131,7 @@ export default function LogQuery() {
             pageSize: pagination.pageSize,
             total: pagination.total,
             showSizeChanger: true,
-            pageSizeOptions: [8, 20, 50, 100],
+            pageSizeOptions: [20, 50, 100],
             showTotal: (total) => `共 ${total} 条`,
           }}
           onChange={(next) => load(next.current, next.pageSize)}

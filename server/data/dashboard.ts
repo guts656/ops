@@ -1,4 +1,6 @@
 import { prisma } from '../db/prisma'
+import { getDashboardTradingSessionSettings } from './settings.ts'
+import { isTradingTime } from '../utils/tradingSessions.ts'
 
 function percent(value: number, digits = 1) {
   return `${value.toFixed(digits)}%`
@@ -49,7 +51,60 @@ type ServiceAggregate = {
 
 function normalizeServiceName(name: string) {
   const value = String(name || '').trim()
-  return value.startsWith('container:') ? value.slice('container:'.length) : value
+  const withoutPrefix = value.startsWith('container:') ? value.slice('container:'.length) : value
+  const swarmTaskName = withoutPrefix.match(/^(.+)\.\d+\.[a-z0-9]{8,}$/i)
+  return swarmTaskName ? swarmTaskName[1] : withoutPrefix
+}
+
+function labelsObject(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function labelString(labels: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = labels[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
+}
+
+function normalizedContainerState(state: string | null | undefined) {
+  return String(state || '').trim().toLowerCase()
+}
+
+function isActiveContainerState(state: string | null | undefined) {
+  return ['running', 'restarting', 'paused', 'created'].includes(normalizedContainerState(state))
+}
+
+function swarmTaskKey(container: { name: string; labels?: unknown }) {
+  const labels = labelsObject(container.labels)
+  const service = labelString(labels, ['com.docker.swarm.service.name'])
+  if (!service) return ''
+  const taskName = container.name.replace(/^\//, '')
+  const match = taskName.match(/^(.+)\.(\d+)\.[^.]+$/)
+  if (!match) return ''
+  const [, taskService, slot] = match
+  if (normalizeServiceName(taskService) !== normalizeServiceName(service)) return ''
+  return `swarm:${normalizeServiceName(service)}:${slot}`
+}
+
+function visibleServiceContainers<T extends { name: string; state: string | null; labels?: unknown }>(containers: T[]) {
+  const activeSwarmTasks = new Set(containers.filter((container) => isActiveContainerState(container.state)).map(swarmTaskKey).filter(Boolean))
+  if (!activeSwarmTasks.size) return containers
+  return containers.filter((container) => {
+    const taskKey = swarmTaskKey(container)
+    return !taskKey || isActiveContainerState(container.state) || !activeSwarmTasks.has(taskKey)
+  })
+}
+
+function isGenericServiceScope(name: string) {
+  const value = normalizeServiceName(name).toLowerCase()
+  return !value || ['全部主机', '全部服务', 'all hosts', 'all services', '*'].includes(value)
+}
+
+function canCreateServiceFromAlert(alert: { service: string; relatedType: string | null; fingerprint: string | null }) {
+  if (isGenericServiceScope(alert.service)) return false
+  return alert.relatedType === 'host_service' || String(alert.fingerprint || '').startsWith('agent-service:')
 }
 
 function normalizeServiceStatus(status: string | null | undefined): ServiceStatusBucket {
@@ -180,19 +235,27 @@ function scoreTrendType(score: number) {
   return 'danger'
 }
 
+type ResourceSample = { cpu: number; memory: number; disk: number }
+
+function averageResources(samples: ResourceSample[]) {
+  return { cpu: avg(samples.map((sample) => sample.cpu)), memory: avg(samples.map((sample) => sample.memory)), disk: avg(samples.map((sample) => sample.disk)) }
+}
+
 export async function getDashboardData() {
   const startOfToday = new Date()
   startOfToday.setHours(0, 0, 0, 0)
   const startOfTrend = trendDates()[0]
+  const tradingSessionSettings = await getDashboardTradingSessionSettings()
+  const resourceWindowStart = new Date(Date.now() - tradingSessionSettings.windowDays * 24 * 60 * 60 * 1000)
 
-  const hostSelect = { id: true, ip: true, hostname: true, status: true, os: true, group: true, maintenanceEnabled: true }
+  const hostSelect = { id: true, ip: true, hostname: true, status: true, os: true, group: true, marketType: true, maintenanceEnabled: true }
   const [
     hosts, activeAlerts, todayAlerts, trendAlerts,
     hostServices, hostContainers, errorLogs, serviceAlerts, recentAlerts,
     batchJobs, selfHealingRules, logMonitorRules,
-    recentBatchJobs, recentSelfHealing,
+    recentBatchJobs, recentSelfHealing, resourcePoints,
   ] = await Promise.all([
-    prisma.host.findMany({ select: { id: true, ip: true, hostname: true, cpu: true, memory: true, disk: true, status: true, os: true } }),
+    prisma.host.findMany({ select: { id: true, ip: true, hostname: true, cpu: true, memory: true, disk: true, status: true, os: true, marketType: true } }),
     prisma.alert.count({ where: { status: { not: '已解决' }, isSuppressed: false } }),
     prisma.alert.count({ where: { createdAt: { gte: startOfToday }, isSuppressed: false } }),
     prisma.alert.findMany({ where: { createdAt: { gte: startOfTrend }, isSuppressed: false }, select: { createdAt: true } }),
@@ -203,7 +266,7 @@ export async function getDashboardData() {
     }),
     prisma.hostContainer.findMany({
       where: { isCurrent: true },
-      select: { id: true, hostId: true, name: true, state: true, status: true, lastReportedAt: true, host: { select: hostSelect } },
+      select: { id: true, hostId: true, name: true, state: true, status: true, labels: true, lastReportedAt: true, host: { select: hostSelect } },
       orderBy: { lastReportedAt: 'desc' },
     }),
     prisma.appLog.groupBy({ by: ['service'], where: { level: 'ERROR', timestamp: { gte: startOfToday } }, _count: { _all: true } }),
@@ -212,7 +275,7 @@ export async function getDashboardData() {
       select: { id: true, level: true, service: true, source: true, relatedType: true, fingerprint: true, metadata: true, createdAt: true, updatedAt: true },
       orderBy: { updatedAt: 'desc' },
     }),
-    prisma.alert.findMany({ where: { status: { not: '已解决' }, isSuppressed: false }, orderBy: { updatedAt: 'desc' }, take: 5 }),
+    prisma.alert.findMany({ where: { status: { not: '已解决' }, isSuppressed: false }, orderBy: { updatedAt: 'desc' }, take: 3 }),
     // 扩展统计
     prisma.batchJob.findMany({ select: { status: true } }),
     prisma.selfHealingRule.findMany({ select: { enabled: true } }),
@@ -220,13 +283,20 @@ export async function getDashboardData() {
     // 最近活动
     prisma.batchJob.findMany({ orderBy: { startedAt: 'desc' }, take: 5, include: { targets: true } }),
     prisma.selfHealingExecution.findMany({ orderBy: { createdAt: 'desc' }, take: 5 }),
+    prisma.hostResourcePoint.findMany({
+      where: { sampledAt: { gte: resourceWindowStart }, host: { status: '在线', maintenanceEnabled: false } },
+      select: { sampledAt: true, cpu: true, memory: true, disk: true, host: { select: { marketType: true } } },
+    }),
   ])
 
   const onlineHosts = hosts.filter((host) => host.status === '在线').length
   const hostOnlineRate = hosts.length ? (onlineHosts / hosts.length) * 100 : 100
-  const avgCpu = avg(hosts.map((host) => host.cpu))
-  const avgMemory = avg(hosts.map((host) => host.memory))
-  const avgDisk = avg(hosts.map((host) => host.disk))
+  const tradingResourcePoints = resourcePoints.filter((point) => isTradingTime(point.sampledAt, point.host.marketType, tradingSessionSettings))
+  const fallbackResources = averageResources(hosts.map((host) => ({ cpu: host.cpu, memory: host.memory, disk: host.disk })))
+  const resourceAverages = tradingResourcePoints.length ? averageResources(tradingResourcePoints) : fallbackResources
+  const avgCpu = resourceAverages.cpu
+  const avgMemory = resourceAverages.memory
+  const avgDisk = resourceAverages.disk
   const resourceScore = clampScore(100 - Math.max(avgCpu, avgMemory, avgDisk))
   const alertScore = clampScore(100 - activeAlerts * 8)
   const errorCountByService = Object.fromEntries(errorLogs.map((row) => [row.service, row._count._all]))
@@ -251,7 +321,8 @@ export async function getDashboardData() {
     aggregate.hosts.push(row)
   }
 
-  for (const container of hostContainers) {
+  const serviceContainers = visibleServiceContainers(hostContainers)
+  for (const container of serviceContainers) {
     const aggregate = ensureService(servicesByName, container.name)
     if (!aggregate) continue
     const row: ServiceHostRow = {
@@ -271,12 +342,13 @@ export async function getDashboardData() {
   }
 
   for (const [name, count] of Object.entries(errorCountByService)) {
-    const aggregate = ensureService(servicesByName, name)
+    const aggregate = servicesByName.get(normalizeServiceName(name))
     if (aggregate) aggregate.errorLogsToday = count
   }
 
   for (const alert of serviceAlerts) {
-    const aggregate = ensureService(servicesByName, alert.service)
+    const serviceKey = normalizeServiceName(alert.service)
+    const aggregate = servicesByName.get(serviceKey) ?? (canCreateServiceFromAlert(alert) ? ensureService(servicesByName, alert.service) : undefined)
     if (!aggregate) continue
     aggregate.activeAlerts += 1
     const key = levelKey(alert.level)
@@ -297,7 +369,7 @@ export async function getDashboardData() {
 
   const uploadedServiceInstanceCount = hostServices.length
   const uniqueServiceNameCount = new Set(hostServices.map((service) => normalizeServiceName(service.name)).filter(Boolean)).size
-  const containerInstanceTotal = hostContainers.length
+  const containerInstanceTotal = serviceContainers.length
 
   const services = Array.from(servicesByName.values()).map((service) => {
     const serviceHosts = service.hosts.filter((host) => host.kind === 'service')
@@ -416,7 +488,7 @@ export async function getDashboardData() {
 
   return {
     metrics: [
-      { key: 'health', title: '系统健康度', value: percent(healthValue), trend: '主机25% / 服务可用性35% / 资源20% / 告警20%', trendType: scoreTrendType(healthValue), color: healthValue >= 90 ? '#52c41a' : healthValue >= 70 ? '#faad14' : '#ff4d4f' },
+      { key: 'health', title: '系统健康度', value: percent(healthValue), trend: `主机25% / 服务可用性35% / 资源20%（交易时段）/ 告警20%`, trendType: scoreTrendType(healthValue), color: healthValue >= 90 ? '#52c41a' : healthValue >= 70 ? '#faad14' : '#ff4d4f' },
       { key: 'alerts', title: '今日告警', value: todayAlerts, trend: `未解决 ${activeAlerts} 条`, trendType: activeAlerts ? 'danger' : 'down', color: '#ff4d4f' },
       { key: 'services', title: '服务可用性', value: percent(serviceHealth.score), trend: `服务名 ${uniqueServiceNameCount} / 服务实例 ${uploadedServiceInstanceCount} / 容器 ${containerInstanceTotal}`, trendType: scoreTrendType(serviceHealth.score), color: serviceHealth.score >= 90 ? '#52c41a' : serviceHealth.score >= 70 ? '#faad14' : '#ff4d4f' },
       { key: 'availability', title: '可用性', value: percent(hostOnlineRate, 2), trend: `${onlineHosts}/${hosts.length || 0} 主机在线`, trendType: hostOnlineRate >= 90 ? 'up' : 'danger', color: '#1677ff' },
@@ -427,6 +499,14 @@ export async function getDashboardData() {
       { name: '内存使用率', value: avgMemory, status: avgMemory > 85 ? 'exception' : 'normal' },
       { name: '磁盘使用率', value: avgDisk, status: avgDisk > 85 ? 'exception' : 'normal' },
     ],
+    resourceMonitorMeta: {
+      scope: 'trading_sessions',
+      windowDays: tradingSessionSettings.windowDays,
+      sampleCount: tradingResourcePoints.length,
+      totalSampleCount: resourcePoints.length,
+      fallback: tradingResourcePoints.length === 0,
+      label: `近 ${tradingSessionSettings.windowDays} 天交易时段平均，已排除开盘前/收盘后/周末`,
+    },
     services,
     serviceHealth,
     alertTrend: Array.from(trendCounts.entries()).map(([date, value]) => ({ date, value })),

@@ -1,11 +1,12 @@
 import { Router } from 'express'
-import { z } from 'zod'
+import { ZodError, z } from 'zod'
 import { recordHostMetrics } from '../data/hosts.ts'
 import { ingestHostContainers } from '../data/hostContainers.ts'
 import { ingestHostServices, ingestServiceEvents } from '../data/hostServices.ts'
 import { getHostLogCollectionPaths } from '../data/logCollectionRules.ts'
 import { ingestAgentLogs } from '../data/logs.ts'
 import { authenticateAgentHost, touchAgentHeartbeat } from '../utils/agentAuth.ts'
+import { alertAgentLogUploadFailure } from '../services/agentLogUploadWatchdog.ts'
 
 const router = Router()
 
@@ -111,8 +112,27 @@ router.post('/hosts/:id/logs', async (req, res, next) => {
     const auth = await authenticateAgentHost(req)
     if ('status' in auth) return res.status(auth.status).json({ message: auth.message })
 
-    const { logs } = logsSchema.parse(req.body)
-    const count = await ingestAgentLogs(auth.host.id, logs)
+    const parsed = logsSchema.safeParse(req.body)
+    if (!parsed.success) {
+      const sample = Array.isArray(req.body?.logs) ? req.body.logs.slice(0, 3).map((log: unknown) => {
+        const item = log && typeof log === 'object' && !Array.isArray(log) ? log as Record<string, unknown> : {}
+        return {
+          timestamp: item.timestamp,
+          serviceType: typeof item.service,
+          serviceLength: typeof item.service === 'string' ? item.service.length : undefined,
+          level: item.level,
+          messageType: typeof item.message,
+          messageLength: typeof item.message === 'string' ? item.message.length : undefined,
+          sourceType: typeof item.source,
+          traceIdType: typeof item.traceId,
+        }
+      }) : []
+      console.warn('[agent-logs] invalid payload', { hostId: auth.host.id, issues: parsed.error.issues, sample })
+      alertAgentLogUploadFailure(auth.host.id, '日志上传参数不正确，后端已拒绝入库', { issues: parsed.error.issues, sample }).catch((error) => console.error('Agent log upload alert failed:', error))
+      return next(new ZodError(parsed.error.issues))
+    }
+
+    const count = await ingestAgentLogs(auth.host.id, parsed.data.logs)
     await touchAgentHeartbeat(auth.host.id)
     res.json({ ok: true, count })
   } catch (error) {

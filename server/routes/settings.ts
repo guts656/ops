@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { PERMISSIONS } from '../config/permissions.ts'
-import { getOutboundNotificationSettings, saveOutboundNotificationSettings } from '../data/settings.ts'
+import { getDashboardTradingSessionSettings, getOutboundNotificationSettings, saveDashboardTradingSessionSettings, saveOutboundNotificationSettings } from '../data/settings.ts'
 import { authenticate } from '../middleware/authenticate.ts'
 import { requirePermission } from '../middleware/requirePermission.ts'
 import { sendNotificationTest } from '../services/outboundNotificationService.ts'
@@ -19,6 +19,22 @@ const outboundNotificationSettingsSchema = z.object({
   defaultChannels: z.array(channelSchema).min(1).max(3),
   dingTalk: channelSettingSchema,
   weCom: channelSettingSchema,
+})
+
+const tradingTimeRangeSchema = z.object({
+  start: z.string().regex(/^\d{2}:\d{2}$/),
+  end: z.string().regex(/^\d{2}:\d{2}$/),
+})
+const tradingMarketSchema = z.object({
+  key: z.enum(['CN_INTERNAL', 'GLOBAL_EXTERNAL', 'ALWAYS_ON']),
+  label: z.string().trim().min(1).max(40),
+  weekdays: z.array(z.coerce.number().int().min(1).max(7)).min(1).max(7),
+  sessions: z.array(tradingTimeRangeSchema).min(1).max(8),
+})
+const dashboardTradingSessionSettingsSchema = z.object({
+  timezone: z.string().trim().min(1).max(80),
+  windowDays: z.coerce.number().int().min(1).max(30),
+  markets: z.array(tradingMarketSchema).min(1).max(3),
 })
 
 const testSchema = z.object({
@@ -42,6 +58,23 @@ router.put('/outbound-notifications', requirePermission(PERMISSIONS.SETTINGS_MAN
   try {
     const values = outboundNotificationSettingsSchema.parse(req.body)
     res.json({ data: await saveOutboundNotificationSettings(values) })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get('/dashboard-trading-sessions', requirePermission(PERMISSIONS.SETTINGS_VIEW), async (_req, res, next) => {
+  try {
+    res.json({ data: await getDashboardTradingSessionSettings() })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.put('/dashboard-trading-sessions', requirePermission(PERMISSIONS.SETTINGS_MANAGE), async (req, res, next) => {
+  try {
+    const values = dashboardTradingSessionSettingsSchema.parse(req.body)
+    res.json({ data: await saveDashboardTradingSessionSettings(values) })
   } catch (error) {
     next(error)
   }

@@ -2,7 +2,7 @@ import type { AgentBackendCandidateResult, AgentInstallOptions, AgentOperationRe
 import { runSshCommand, testSshConnection } from './ssh.ts'
 import { runWinrmCommand, testWinrmConnection, uploadWinrmFile } from './winrm.ts'
 
-export const AGENT_VERSION = 'v2.10.4'
+export const AGENT_VERSION = 'v2.10.5'
 
 function toOperationResult(result: RemoteCommandResult): AgentOperationResult {
   return { ...result, status: result.success ? 'success' : 'failed' }
@@ -184,17 +184,16 @@ def compact_payload(value):
         return [compact_payload(item) for item in value]
     return value
 
-def log_file():
-    for candidate in LOG_CANDIDATES:
-        if candidate.exists() and candidate.is_file():
-            return candidate
-    return None
+def log_files():
+    return [candidate for candidate in LOG_CANDIDATES if candidate.exists() and candidate.is_file()]
 
 def log_level(message, default=None):
     if re.search(r'error|exception|failed|fatal|panic', message, re.IGNORECASE):
         return 'ERROR'
     if re.search(r'warn|warning', message, re.IGNORECASE):
         return 'WARN'
+    if re.search(r'debug|trace', message, re.IGNORECASE):
+        return 'DEBUG'
     if re.search(r'info|notice', message, re.IGNORECASE):
         return 'INFO'
     return default
@@ -229,7 +228,7 @@ def read_file_log(path, state, service_name=None, system_only=False, default_lev
                 offsets[key] = handle.tell()
                 continue
             level = log_level(message, default_level)
-            if level and (not system_only or level == 'ERROR'):
+            if level:
                 trace_basis = key + ':' + str(line_start) + ':' + message
                 trace = hashlib.sha1(trace_basis.encode('utf-8', errors='replace')).hexdigest()[:16]
                 logs.append({'timestamp': now_iso(), 'service': service_name or path.name or 'system', 'level': level, 'message': compact_text(message), 'source': key, 'traceId': 'file:' + trace, 'labels': {'logPath': key, 'offset': line_start}})
@@ -244,13 +243,16 @@ def read_configured_logs(state):
         if base.is_file():
             logs.extend(read_file_log(base, state, default_level='INFO'))
         elif base.is_dir():
-            for child in sorted(base.glob('*.log'))[:MAX_CONFIGURED_FILES]:
+            candidates = [child for child in base.iterdir() if child.is_file() and child.suffix.lower() in ('.log', '.txt', '.out', '.err')]
+            for child in sorted(candidates, key=lambda item: item.stat().st_mtime, reverse=True)[:MAX_CONFIGURED_FILES]:
                 logs.extend(read_file_log(child, state, base.name + '/' + child.name, default_level='INFO'))
     return logs
 
 def read_logs(state):
-    path = log_file()
-    return read_file_log(path, state, 'system', True) if path else []
+    logs = []
+    for path in log_files():
+        logs.extend(read_file_log(path, state, 'system', False, default_level='INFO'))
+    return logs
 
 def docker_stats_by_name():
     stats = {}
@@ -353,9 +355,16 @@ def collect_once():
         containers = discover_containers()
         if containers:
             post('/api/agent/hosts/' + HOST_ID + '/containers', {'containers': containers})
+        before_offsets = json.loads(json.dumps(state.get('offsets', {})))
+        before_container_offsets = json.loads(json.dumps(state.get('container_log_timestamps', {})))
         logs = read_logs(state) + read_configured_logs(state) + read_container_logs(containers, state)
-        if logs:
-            post_log_batches(logs)
+        try:
+            if logs:
+                post_log_batches(logs)
+        except (urllib.error.URLError, TimeoutError, OSError, RuntimeError):
+            state['offsets'] = before_offsets
+            state['container_log_timestamps'] = before_container_offsets
+            raise
         save_state(state)
         (BASE / 'heartbeat').write_text(time.strftime('%Y-%m-%d %H:%M:%S'), encoding='utf-8')
     except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
@@ -705,18 +714,17 @@ function Compact-Text($value, $max) {
 }
 function Get-Sha1Hex($text) {
   $sha1 = [System.Security.Cryptography.SHA1]::Create()
-  try {
-    $bytes = [Text.Encoding]::UTF8.GetBytes([string]$text)
-    $hashBytes = $sha1.ComputeHash($bytes)
-    return (-join ($hashBytes | ForEach-Object { $_.ToString('x2') }))
-  } finally {
-    $sha1.Dispose()
-  }
+  $bytes = [Text.Encoding]::UTF8.GetBytes([string]$text)
+  $hashBytes = $sha1.ComputeHash($bytes)
+  return (-join ($hashBytes | ForEach-Object { $_.ToString('x2') }))
 }
 function Invoke-OpsHttp($method, $path, $bodyText) {
   $request = [System.Net.HttpWebRequest]::Create("$($config.apiBaseUrl)$path")
   $request.Method = $method
   $request.Timeout = 10000
+  $request.ReadWriteTimeout = 10000
+  $request.KeepAlive = $false
+  $request.Proxy = $null
   $request.Headers.Set('Authorization', [string]$headers.Authorization)
   if ($method -eq 'POST') {
     $request.ContentType = 'application/json; charset=utf-8'
@@ -804,32 +812,20 @@ function Collect-ServiceEvents($state, $services) {
 function Get-LogLevel($line) {
   if ($line -match '(?i)error|exception|failed|fatal|panic|错误|异常|失败') { return 'ERROR' }
   if ($line -match '(?i)warn|warning|警告|告警') { return 'WARN' }
+  if ($line -match '(?i)debug|trace|调试') { return 'DEBUG' }
   if ($line -match '(?i)info|notice|成功|启动|连接') { return 'INFO' }
   return 'INFO'
 }
+function Get-OpsBusinessNow {
+  return (Get-Date).ToUniversalTime().AddHours(8)
+}
 function Expand-DateTemplate($value) {
   $text = [string]$value
-  $now = Get-Date
+  $now = Get-OpsBusinessNow
   $text = $text.Replace('%Y', $now.ToString('yyyy'))
   $text = $text.Replace('%m', $now.ToString('MM'))
   $text = $text.Replace('%d', $now.ToString('dd'))
   return $text
-}
-function Get-TodayLogNamePatterns {
-  $now = Get-Date
-  @(
-    $now.ToString('yyyyMMdd'),
-    $now.ToString('yyyy-MM-dd'),
-    $now.ToString('yyyy_MM_dd')
-  )
-}
-function Is-TodayLogFile($item) {
-  if (@('.log', '.txt') -notcontains $item.Extension) { return $false }
-  $name = [string]$item.Name
-  foreach ($pattern in Get-TodayLogNamePatterns) {
-    if ($name.Contains($pattern)) { return $true }
-  }
-  return $false
 }
 function Get-ConfiguredLogFiles($pathValue) {
   $pathValue = Expand-DateTemplate $pathValue
@@ -837,7 +833,9 @@ function Get-ConfiguredLogFiles($pathValue) {
     return @(Get-Item -LiteralPath $pathValue -ErrorAction SilentlyContinue)
   }
   if (-not (Test-Path -LiteralPath $pathValue -PathType Container)) { return @() }
-  return @(Get-ChildItem -LiteralPath $pathValue -Recurse -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer -and (Is-TodayLogFile $_) } | Sort-Object LastWriteTime -Descending | Select-Object -First 200)
+  $cutoff = (Get-Date).AddDays(-7)
+  $extensions = @('.log', '.txt', '.out', '.err')
+  return @(Get-ChildItem -LiteralPath $pathValue -Recurse -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer -and $extensions -contains $_.Extension.ToLowerInvariant() -and $_.LastWriteTime -ge $cutoff } | Sort-Object LastWriteTime -Descending | Select-Object -First 30)
 }
 function Trim-TrailingCr($buffer) {
   if ($buffer.Length -gt 0 -and $buffer[$buffer.Length - 1] -eq 13) {
@@ -862,13 +860,20 @@ function New-LogReadResult($lines, $position) {
 function Read-LastLines($pathKey, $count) {
   $buffer = New-Object 'System.Collections.ArrayList'
   try {
-    $reader = New-Object System.IO.StreamReader($pathKey, [Text.Encoding]::UTF8)
+    $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+    $stream = [System.IO.File]::Open($pathKey, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
     try {
-      while (($line = $reader.ReadLine()) -ne $null) {
-        [void]$buffer.Add($line)
-        if ($buffer.Count -gt $count) { $buffer.RemoveAt(0) }
-      }
-    } finally { $reader.Close() }
+      $maxBytes = [Math]::Min([int64]1048576, [int64]$stream.Length)
+      $stream.Seek(-1 * $maxBytes, [System.IO.SeekOrigin]::End) | Out-Null
+      $reader = New-Object System.IO.StreamReader($stream, [Text.Encoding]::UTF8)
+      try {
+        if ($maxBytes -lt $stream.Length) { $reader.ReadLine() | Out-Null }
+        while (($line = $reader.ReadLine()) -ne $null) {
+          [void]$buffer.Add($line)
+          if ($buffer.Count -gt $count) { $buffer.RemoveAt(0) }
+        }
+      } finally { $reader.Close() }
+    } finally { $stream.Close() }
   } catch {}
   $buffer
 }
@@ -880,6 +885,13 @@ function Read-ConfiguredLogFile($pathKey, $last, $maxLines) {
     $stream = [System.IO.File]::Open($pathKey, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
     try {
       if ($last -gt $stream.Length) { $last = 0 }
+      if ($last -eq 0 -and $stream.Length -gt 1048576) {
+        $tailLines = @(Read-LastLines $pathKey 200)
+        foreach ($line in $tailLines) {
+          if (-not [string]::IsNullOrWhiteSpace([string]$line)) { $lines += (New-LogReadEntry 0 ([string]$line) $stream.Length) }
+        }
+        return New-LogReadResult $lines $stream.Length
+      }
       $stream.Seek($last, [System.IO.SeekOrigin]::Begin) | Out-Null
       $position = $stream.Position
       $bytes = New-Object 'System.Collections.Generic.List[byte]'
@@ -910,7 +922,7 @@ function Read-ConfiguredLogFile($pathKey, $last, $maxLines) {
       $stream.Close()
     }
   } catch {
-    $lines = @(Read-LastLines $pathKey 80 | ForEach-Object { New-LogReadEntry 0 $_ $null })
+    $lines = @(Read-LastLines $pathKey 200 | ForEach-Object { New-LogReadEntry 0 $_ $null })
     $item = Get-Item -LiteralPath $pathKey -ErrorAction SilentlyContinue
     if ($item) { $position = $item.Length }
   }
@@ -932,10 +944,13 @@ function Collect-ConfiguredLogs($state) {
       $result = Read-ConfiguredLogFile $pathKey $last 500
       foreach ($entry in @($result.Lines)) {
         $line = [string]$entry.Text
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
         $level = Get-LogLevel $line
         $hashInput = $key + ':' + $entry.Offset + ':' + $line
         $hash = (Get-Sha1Hex $hashInput).Substring(0, 16)
-        $logs += @{ timestamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); service = $item.Name; level = $level; traceId = "file:$hash"; message = (Compact-Text $line 2000); source = $pathKey; labels = @{ logPath = $pathKey; offset = $entry.Offset } }
+        $serviceName = [System.IO.Path]::GetFileNameWithoutExtension($item.Name)
+        if ([string]::IsNullOrWhiteSpace($serviceName)) { $serviceName = if ($item.Name) { [string]$item.Name } else { 'file' } }
+        $logs += @{ timestamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); service = $serviceName; level = $level; traceId = "file:$hash"; message = (Compact-Text $line 2000); source = $pathKey; labels = @{ logPath = $pathKey; offset = $entry.Offset } }
       }
       $state.fileLogOffsets | Add-Member -MemberType NoteProperty -Name $key -Value ([int64]$result.Position) -Force
     }
@@ -965,7 +980,7 @@ function Collect-Logs($state) {
     $usedModern = $false
     if (Get-Command Get-WinEvent -ErrorAction SilentlyContinue) {
       try {
-        $events = @(Get-WinEvent -LogName $logName -MaxEvents 80 -ErrorAction Stop | Sort-Object RecordId)
+        $events = @(Get-WinEvent -LogName $logName -MaxEvents 500 -ErrorAction Stop | Sort-Object RecordId)
         $last = 0
         $maxRecordId = $last
         if ($state.eventRecordIds.PSObject.Properties[$logName]) { $last = [int64]$state.eventRecordIds.$logName; $maxRecordId = $last }
@@ -982,7 +997,7 @@ function Collect-Logs($state) {
     }
     if ((-not $usedModern) -and (Get-Command Get-EventLog -ErrorAction SilentlyContinue)) {
       $stateKey = 'legacy:' + $logName
-      $events = @(Get-EventLog -LogName $logName -Newest 80 -ErrorAction SilentlyContinue | Sort-Object Index)
+      $events = @(Get-EventLog -LogName $logName -Newest 500 -ErrorAction SilentlyContinue | Sort-Object Index)
       $last = 0
       $maxRecordId = $last
       if ($state.eventRecordIds.PSObject.Properties[$stateKey]) { $last = [int64]$state.eventRecordIds.$stateKey; $maxRecordId = $last }
@@ -995,7 +1010,7 @@ function Collect-Logs($state) {
       $state.eventRecordIds | Add-Member -MemberType NoteProperty -Name $stateKey -Value $maxRecordId -Force
     }
   }
-  $logs | Select-Object -Last 100
+  $logs | Sort-Object { $_['timestamp'] } | Select-Object -Last 1000
 }
 function Collect-Once {
   $state = Load-State
@@ -1018,10 +1033,14 @@ function Collect-Once {
   } catch {
     Write-Output "service events upload skipped: $($_.Exception.Message)"
   }
+  $eventRecordIdsBefore = ConvertTo-OpsJson $state.eventRecordIds
+  $fileLogOffsetsBefore = ConvertTo-OpsJson $state.fileLogOffsets
   try {
     $logs = @(Collect-Logs $state) + @(Collect-ConfiguredLogs $state)
     if ($logs.Count -gt 0) { Post-LogBatches $logs }
   } catch {
+    $state.eventRecordIds = ConvertFrom-OpsJson $eventRecordIdsBefore
+    $state.fileLogOffsets = ConvertFrom-OpsJson $fileLogOffsetsBefore
     Write-Output "logs upload skipped: $($_.Exception.Message)"
   }
   Save-State $state
@@ -1076,11 +1095,24 @@ async function installWindowsAgent(input: RemoteConnectionInput, options: AgentI
 
   return runWinrmCommand(input, `
     $base = ${psSingle(base)}
-    if (!(Test-Path -LiteralPath (Join-Path $base 'ops-platform-agent.ps1'))) { throw 'Agent 脚本文件未写入' }
+    $scriptPath = Join-Path $base 'ops-platform-agent.ps1'
+    $configPath = Join-Path $base 'agent-config.json'
+    & schtasks.exe /End /TN OpsPlatformAgent 2>$null | Out-Null
+    try {
+      $agentProcesses = @(Get-WmiObject -Class Win32_Process -Filter "name = 'powershell.exe'" -ErrorAction SilentlyContinue)
+      foreach ($process in $agentProcesses) {
+        if (([string]$process.CommandLine) -like '*OpsPlatformAgent*') { $process.Terminate() | Out-Null }
+      }
+    } catch {}
+    Start-Sleep -Seconds 2
+    if (!(Test-Path -LiteralPath $scriptPath)) { throw 'Agent 脚本文件未写入' }
+    if (!(Test-Path -LiteralPath $configPath)) { throw 'Agent 配置文件未写入' }
+    $configText = [System.IO.File]::ReadAllText($configPath)
+    if ($configText -notlike '*${options.hostId}*') { throw 'Agent 配置主机 ID 校验失败' }
+    if ($configText -notlike '*${options.agentToken.slice(0, 12)}*') { throw 'Agent 配置 Token 校验失败' }
     icacls $base /inheritance:r /grant 'Administrators:(OI)(CI)F' 'SYSTEM:(OI)(CI)F' | Out-Null
-    $taskAction = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\OpsPlatformAgent\ops-platform-agent.ps1'
+    $taskAction = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '"'
     & schtasks.exe /Create /TN OpsPlatformAgent /SC ONSTART /RU SYSTEM /TR $taskAction /F | Out-Null
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:/ProgramData/OpsPlatformAgent/ops-platform-agent.ps1 once
     & schtasks.exe /Run /TN OpsPlatformAgent | Out-Null
     Write-Output 'Ops Platform Agent ${AGENT_VERSION} installed via ops-platform-agent.ps1'
   `)

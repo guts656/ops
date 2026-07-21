@@ -26,6 +26,9 @@ function connect(input: RemoteConnectionInput) {
         clearTimeout(timer)
         resolve(client)
       })
+      .on('keyboard-interactive', (_name, _instructions, _instructionsLang, prompts, finish) => {
+        finish(prompts.map(() => input.password || ''))
+      })
       .on('error', (error) => {
         clearTimeout(timer)
         reject(error)
@@ -37,7 +40,7 @@ function connect(input: RemoteConnectionInput) {
         password: input.authType === '密码' ? input.password : undefined,
         privateKey: input.authType === '密钥' ? input.privateKey : undefined,
         readyTimeout: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        tryKeyboard: false,
+        tryKeyboard: input.authType === '密码',
       })
   })
 }
