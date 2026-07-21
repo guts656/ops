@@ -11,6 +11,8 @@ const businessErrors = [
   '不能禁用当前登录账号',
   '不能删除当前登录账号',
   '日志监控规则至少需要一个关键字',
+  'xm2 monitor.json 不是有效 JSON',
+  'xm2 JSON 必须是数组，或包含 data/rules/items 数组',
 ]
 
 export function errorHandler(error: unknown, req: Request, res: Response, _next: NextFunction) {

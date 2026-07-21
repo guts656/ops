@@ -22,13 +22,13 @@ interface ImportFormValues {
   hostGroup?: string
 }
 
-function readText(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result || ''))
-    reader.onerror = () => reject(reader.error)
-    reader.readAsText(file)
-  })
+async function readText(file: File) {
+  const buffer = await file.arrayBuffer()
+  try {
+    return new TextDecoder('gb18030').decode(buffer)
+  } catch {
+    return new TextDecoder('utf-8').decode(buffer)
+  }
 }
 
 function timeText(rule: Xm2ConvertedRulePreview['rule']) {
