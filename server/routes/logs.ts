@@ -113,6 +113,9 @@ const xm2ImportSchema = z.object({
   hostId: z.string().trim().optional(),
   hostIds: z.array(z.string().trim().min(1)).max(200).optional(),
   hostGroup: z.string().trim().optional(),
+  daysOfWeek: z.array(z.coerce.number().int().min(1).max(7)).max(7).optional(),
+  holidayMode: z.enum(['ignore', 'include', 'exclude']).optional(),
+  holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(80).optional(),
 })
 
 function xm2Input(value: z.infer<typeof xm2PreviewSchema>) {
@@ -228,6 +231,9 @@ router.post('/xm2-convert/import', requirePermission(PERMISSIONS.LOGS_MANAGE), a
           hostId: input.hostScope === 'single' ? input.hostId || hostIds[0] : undefined,
           hostIds: input.hostScope === 'multiple' ? hostIds : input.hostScope === 'single' && (input.hostId || hostIds[0]) ? [input.hostId || hostIds[0]] : [],
           hostGroup: input.hostScope === 'group' ? input.hostGroup : undefined,
+          daysOfWeek: input.daysOfWeek ?? [],
+          holidayMode: input.holidayMode ?? 'ignore',
+          holidays: input.holidays ?? [],
         }))
         imported.push(await createLogMonitorRule(payload))
       } catch (error) {

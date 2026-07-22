@@ -19,7 +19,8 @@ export function errorHandler(error: unknown, req: Request, res: Response, _next:
   const traceId = requestTraceId(req)
 
   if (error instanceof ZodError) {
-    return res.status(400).json({ message: '请求参数不正确', issues: error.issues, traceId })
+    const detail = error.issues[0]?.message
+    return res.status(400).json({ message: detail ? `请求参数不正确：${detail}` : '请求参数不正确', issues: error.issues, traceId })
   }
 
   const rawMessage = error instanceof Error ? error.message : '服务器内部错误'

@@ -11,6 +11,15 @@ import type { Xm2ConvertedRulePreview, Xm2ConvertPreviewResult, Xm2SkippedItem }
 import type { Host } from '../types/host'
 
 const MAX_UPLOAD_SIZE = 5 * 1024 * 1024
+const weekdayOptions = [
+  { label: '周一', value: 1 },
+  { label: '周二', value: 2 },
+  { label: '周三', value: 3 },
+  { label: '周四', value: 4 },
+  { label: '周五', value: 5 },
+  { label: '周六', value: 6 },
+  { label: '周日', value: 7 },
+]
 
 type HostScope = 'all' | 'single' | 'multiple' | 'group'
 
@@ -20,6 +29,9 @@ interface ImportFormValues {
   hostId?: string
   hostIds?: string[]
   hostGroup?: string
+  daysOfWeek?: number[]
+  holidayMode?: 'ignore' | 'include' | 'exclude'
+  holidaysText?: string
 }
 
 async function readText(file: File) {
@@ -34,6 +46,10 @@ async function readText(file: File) {
 function timeText(rule: Xm2ConvertedRulePreview['rule']) {
   if (!rule.timeRanges?.length) return '全天'
   return rule.timeRanges.map((range) => `${range.start}-${range.end}`).join('；')
+}
+
+function splitLines(value?: string) {
+  return (value || '').split(/[\n,，;；]+/).map((item) => item.trim()).filter(Boolean)
 }
 
 export default function Xm2Converter() {
@@ -52,7 +68,7 @@ export default function Xm2Converter() {
   const selectedCandidates = useMemo(() => (preview?.candidates ?? []).filter((item) => selectedKeys.includes(item.key)), [preview, selectedKeys])
 
   useEffect(() => {
-    form.setFieldsValue({ hostScope: 'group' })
+    form.setFieldsValue({ hostScope: 'group', daysOfWeek: [1, 2, 3, 4, 5], holidayMode: 'ignore' })
     queryHosts({}).then(setHosts).catch(() => setHosts([]))
   }, [form])
 
@@ -110,6 +126,9 @@ export default function Xm2Converter() {
             hostId: values.hostId,
             hostIds: values.hostIds,
             hostGroup: values.hostGroup,
+            daysOfWeek: values.daysOfWeek ?? [],
+            holidayMode: values.holidayMode ?? 'ignore',
+            holidays: splitLines(values.holidaysText),
           })
           if (result.failed.length) message.warning(`导入完成：成功 ${result.imported.length} 条，失败 ${result.failed.length} 条`)
           else message.success(`导入完成：成功 ${result.imported.length} 条，规则默认停用`)
@@ -194,7 +213,16 @@ export default function Xm2Converter() {
               {hostScope === 'single' ? <Form.Item name="hostId" label="主机" rules={[{ required: true, message: '请选择主机' }]}><Select showSearch optionFilterProp="label" options={hostOptions} /></Form.Item> : null}
               {hostScope === 'multiple' ? <Form.Item name="hostIds" label="多台主机" rules={[{ required: true, message: '请选择至少一台主机' }]}><Select mode="multiple" showSearch optionFilterProp="label" options={hostOptions} /></Form.Item> : null}
               {hostScope === 'group' ? <Form.Item name="hostGroup" label="主机组" rules={[{ required: true, message: '请选择主机组' }]}><Select showSearch optionFilterProp="label" options={groupOptions} /></Form.Item> : null}
-              <Typography.Paragraph type="secondary">导入时会把这个范围应用到全部选中规则。日志采集规则不会自动创建，请确认对应主机或主机组已采集这些文件路径。</Typography.Paragraph>
+              <Form.Item name="daysOfWeek" label="生效星期">
+                <Checkbox.Group options={weekdayOptions} />
+              </Form.Item>
+              <Form.Item name="holidayMode" label="假日策略">
+                <Select options={[{ label: '忽略假日设置', value: 'ignore' }, { label: '仅指定假日生效', value: 'include' }, { label: '指定假日不生效', value: 'exclude' }]} />
+              </Form.Item>
+              <Form.Item name="holidaysText" label="指定假日">
+                <Input.TextArea rows={3} placeholder="每行一个日期，例如 2026-05-01" />
+              </Form.Item>
+              <Typography.Paragraph type="secondary">导入时会把主机范围、星期和假日策略应用到全部选中规则。日志采集规则不会自动创建，请确认对应主机或主机组已采集这些文件路径。</Typography.Paragraph>
             </Card>
           </Col>
         </Row>

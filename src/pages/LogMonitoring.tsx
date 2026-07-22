@@ -49,6 +49,10 @@ function normalizeTimeRanges(values?: LogMonitorTimeRange[]) {
   return (values || []).filter((range) => range?.start && range?.end)
 }
 
+function withoutNulls<T extends Record<string, unknown>>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== null)) as T
+}
+
 function toPayload(values: RuleFormValues): LogMonitorRuleInput {
   const notification = values.notification?.channels?.length
     ? {
@@ -67,7 +71,7 @@ function toPayload(values: RuleFormValues): LogMonitorRuleInput {
         ? { hostScope, hostId: undefined, hostIds: [], hostGroup: values.hostGroup }
         : { hostScope: 'all' as const, hostId: undefined, hostIds: [], hostGroup: undefined }
 
-  return {
+  return withoutNulls({
     name: values.name,
     description: values.description,
     enabled: values.enabled,
@@ -86,7 +90,7 @@ function toPayload(values: RuleFormValues): LogMonitorRuleInput {
     holidays: splitLines(values.holidaysText),
     notification,
     selfHealingBinding: values.selfHealingBinding ? { ...values.selfHealingBinding, targetServiceName: values.selfHealingBinding.targetServiceName || values.selfHealingBinding.serviceName || '', serviceName: values.selfHealingBinding.targetServiceName || values.selfHealingBinding.serviceName || '', executionMode: values.selfHealingBinding.autoExecute ? 'controlled' : 'safe' } : undefined,
-  }
+  })
 }
 
 function toFormValues(rule?: LogMonitorRule): Partial<RuleFormValues> {
