@@ -27,6 +27,8 @@ const permissionLabels: Record<Permission, string> = {
   [PERMISSIONS.ALERT_HANDLING_MANAGE]: '管理告警自愈映射',
   [PERMISSIONS.LOGS_VIEW]: '查看日志查询',
   [PERMISSIONS.LOGS_MANAGE]: '管理日志监控规则',
+  [PERMISSIONS.SSL_CERTIFICATES_VIEW]: '查看SSL证书监控',
+  [PERMISSIONS.SSL_CERTIFICATES_MANAGE]: '管理SSL证书监控',
   [PERMISSIONS.TOPOLOGY_VIEW]: '查看服务拓扑',
   [PERMISSIONS.HOSTS_VIEW]: '查看主机管理',
   [PERMISSIONS.HOSTS_MANAGE]: '管理主机',

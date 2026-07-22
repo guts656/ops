@@ -2,7 +2,7 @@ import type { AgentBackendCandidateResult, AgentInstallOptions, AgentOperationRe
 import { runSshCommand, testSshConnection } from './ssh.ts'
 import { runWinrmCommand, testWinrmConnection, uploadWinrmFile } from './winrm.ts'
 
-export const AGENT_VERSION = 'v2.10.5'
+export const AGENT_VERSION = 'v2.10.6'
 
 function toOperationResult(result: RemoteCommandResult): AgentOperationResult {
   return { ...result, status: result.success ? 'success' : 'failed' }
@@ -742,8 +742,28 @@ function Invoke-OpsHttp($method, $path, $bodyText) {
 function Post-Json($path, $payload) {
   Invoke-OpsHttp 'POST' $path (ConvertTo-OpsJson $payload) | Out-Null
 }
+function Normalize-LogItem($item) {
+  if ($null -eq $item) { return $null }
+  $message = Compact-Text $item.message 2000
+  if ([string]::IsNullOrWhiteSpace($message)) { return $null }
+  $service = [string]$item.service
+  if ([string]::IsNullOrWhiteSpace($service)) {
+    $sourceText = [string]$item.source
+    if (-not [string]::IsNullOrWhiteSpace($sourceText)) {
+      try { $service = [System.IO.Path]::GetFileNameWithoutExtension($sourceText) } catch {}
+    }
+    if ([string]::IsNullOrWhiteSpace($service)) { $service = 'agent' }
+  }
+  $level = [string]$item.level
+  if (@('ERROR', 'WARN', 'INFO', 'DEBUG') -notcontains $level) { $level = 'INFO' }
+  $item.service = Compact-Text $service 200
+  $item.level = $level
+  $item.message = $message
+  return $item
+}
 function Post-LogBatches($logs) {
-  $items = @($logs)
+  $items = @($logs | ForEach-Object { Normalize-LogItem $_ } | Where-Object { $null -ne $_ })
+  if ($items.Count -le 0) { return }
   for ($index = 0; $index -lt $items.Count; $index += 100) {
     $end = [Math]::Min($index + 99, $items.Count - 1)
     Post-Json "/api/agent/hosts/$($config.hostId)/logs" @{ logs = @($items[$index..$end]) }
@@ -887,8 +907,13 @@ function Read-ConfiguredLogFile($pathKey, $last, $maxLines) {
       if ($last -gt $stream.Length) { $last = 0 }
       if ($last -eq 0 -and $stream.Length -gt 1048576) {
         $tailLines = @(Read-LastLines $pathKey 200)
+        $tailOffset = [Math]::Max([int64]0, [int64]$stream.Length - 1048576)
+        $tailIndex = 0
         foreach ($line in $tailLines) {
-          if (-not [string]::IsNullOrWhiteSpace([string]$line)) { $lines += (New-LogReadEntry 0 ([string]$line) $stream.Length) }
+          if (-not [string]::IsNullOrWhiteSpace([string]$line)) {
+            $lines += (New-LogReadEntry ($tailOffset + $tailIndex) ([string]$line) $stream.Length)
+            $tailIndex += 1
+          }
         }
         return New-LogReadResult $lines $stream.Length
       }
@@ -1049,22 +1074,23 @@ function Collect-Once {
 if ($args.Count -gt 0 -and $args[0] -eq 'once') { Collect-Once } else { while ($true) { Collect-Once; Start-Sleep -Seconds ([int]$config.intervalSeconds) } }
 '@ | Set-Content -Encoding UTF8 -Path (Join-Path $base 'ops-platform-agent.ps1')
     icacls $base /inheritance:r /grant 'Administrators:(OI)(CI)F' 'SYSTEM:(OI)(CI)F' | Out-Null
-    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File "C:\\ProgramData\\OpsPlatformAgent\\ops-platform-agent.ps1"'
-    $trigger = New-ScheduledTaskTrigger -AtStartup
-    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
-    Register-ScheduledTask -TaskName 'OpsPlatformAgent' -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\ProgramData\\OpsPlatformAgent\\ops-platform-agent.ps1" once
-    Start-ScheduledTask -TaskName 'OpsPlatformAgent'
-    $task = Get-ScheduledTask -TaskName 'OpsPlatformAgent'
+    $agentScript = 'C:\\ProgramData\\OpsPlatformAgent\\ops-platform-agent.ps1'
+    $taskCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $agentScript + '" once'
+    $intervalMinutes = [Math]::Max(1, [Math]::Ceiling([double]${options.intervalSeconds} / 60))
+    schtasks /End /TN OpsPlatformAgent 2>$null | Out-Null
+    schtasks /Delete /TN OpsPlatformAgent /F 2>$null | Out-Null
+    schtasks /Create /TN OpsPlatformAgent /SC MINUTE /MO $intervalMinutes /RU SYSTEM /RL HIGHEST /TR $taskCommand /F | Out-Null
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File $agentScript once
+    schtasks /Run /TN OpsPlatformAgent | Out-Null
+    $task = schtasks /Query /TN OpsPlatformAgent 2>$null
     if (-not $task) { throw '计划任务创建失败' }
     Write-Output 'Ops Platform Agent ${AGENT_VERSION} installed via ops-platform-agent.ps1'
   `
 }
 
 const windowsRestartScript = `
-    $task = Get-ScheduledTask -TaskName 'OpsPlatformAgent' -ErrorAction Stop
-    Stop-ScheduledTask -TaskName 'OpsPlatformAgent' -ErrorAction SilentlyContinue
-    Start-ScheduledTask -TaskName 'OpsPlatformAgent'
+    schtasks /End /TN OpsPlatformAgent 2>$null | Out-Null
+    schtasks /Run /TN OpsPlatformAgent | Out-Null
     Get-Date -Format 'yyyy-MM-dd HH:mm:ss' | Set-Content -Encoding UTF8 -Path 'C:\\ProgramData\\OpsPlatformAgent\\heartbeat'
     Write-Output 'Ops Platform Agent restarted'
 `

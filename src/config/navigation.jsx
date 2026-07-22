@@ -23,6 +23,7 @@ export const navigationItems = [
   { key: '/hosts', path: '/hosts', icon: <CloudServerOutlined />, label: '★ 主机管理', title: '★ 主机管理', subtitle: '统一管理主机纳管、Agent 生命周期、资源趋势和审计日志', permission: PERMISSIONS.HOSTS_VIEW },
   { key: '/logs', path: '/logs', icon: <FileSearchOutlined />, label: '★ 日志查询', title: '★ 日志查询', subtitle: '按关键字、服务和级别检索日志数据', permission: PERMISSIONS.LOGS_VIEW },
   { key: '/log-monitoring', path: '/log-monitoring', icon: <FundProjectionScreenOutlined />, label: '★ 日志监控', title: '★ 日志监控', subtitle: '按关键字次数、周期、节假日和时间段触发告警', permission: PERMISSIONS.LOGS_VIEW },
+  { key: '/ssl-certificates', path: '/ssl-certificates', icon: <SafetyCertificateOutlined />, label: '★ SSL证书监控', title: '★ SSL证书监控', subtitle: '监控域名证书有效期、域名匹配和到期告警', permission: PERMISSIONS.SSL_CERTIFICATES_VIEW },
   { key: '/batch-jobs', path: '/batch-jobs', icon: <DeploymentUnitOutlined />, label: '★ 批处理', title: '★ 批处理', subtitle: '批量上传文件、执行脚本并查看执行记录和日志', permission: PERMISSIONS.BATCH_VIEW },
   { key: '/self-healing', path: '/self-healing', icon: <ThunderboltOutlined />, label: '★ 自愈规则', title: '★ 自愈规则', subtitle: '配置故障自愈条件、动作和执行历史', permission: PERMISSIONS.SELF_HEALING_VIEW },
   { key: '/audit-logs', path: '/audit-logs', icon: <FileProtectOutlined />, label: '★ 审计日志中心', title: '★ 审计日志中心', subtitle: '集中查询、校验和导出平台审计日志', permission: PERMISSIONS.AUDIT_LOG_VIEW },

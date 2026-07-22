@@ -1,0 +1,177 @@
+{
+  "summary": {
+    "source": "D:\\multica_workspaces\\ops-platform\\monitor.json",
+    "encoding": "gb18030",
+    "total": 58,
+    "converted": 30,
+    "skipped": 28,
+    "skippedByReason": {
+      "non-log-monitor-ignored": 21,
+      "exclude-mode-not-directly-supported": 7
+    },
+    "generatedAt": "2026-07-21T10:55:38"
+  },
+  "skipped": [
+    {
+      "key": "k01",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k02",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k03",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k04",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k05",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k06",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k07",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k08",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k09",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k10",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k11",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k12",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k13",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k14",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k15",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k16",
+      "type": "service",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k17",
+      "type": "fileTime",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k18",
+      "type": "diskSpace",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k19",
+      "type": "diskSpace",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k33",
+      "type": "fileContent",
+      "source": "C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+      "word": "QuoteAddress",
+      "mode": "exclude",
+      "reason": "exclude-mode-not-directly-supported"
+    },
+    {
+      "key": "k34",
+      "type": "fileContent",
+      "source": "C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+      "word": "ctpClose end",
+      "mode": "exclude",
+      "reason": "exclude-mode-not-directly-supported"
+    },
+    {
+      "key": "k35",
+      "type": "fileContent",
+      "source": "C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+      "word": "QuoteAddress",
+      "mode": "exclude",
+      "reason": "exclude-mode-not-directly-supported"
+    },
+    {
+      "key": "k36",
+      "type": "fileContent",
+      "source": "C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+      "word": "QuoteAddress",
+      "mode": "exclude",
+      "reason": "exclude-mode-not-directly-supported"
+    },
+    {
+      "key": "k37",
+      "type": "fileContent",
+      "source": "C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+      "word": "ctpClose end",
+      "mode": "exclude",
+      "reason": "exclude-mode-not-directly-supported"
+    },
+    {
+      "key": "k38",
+      "type": "fileContent",
+      "source": "C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+      "word": "QuoteAddress",
+      "mode": "exclude",
+      "reason": "exclude-mode-not-directly-supported"
+    },
+    {
+      "key": "k39",
+      "type": "fileContent",
+      "source": "C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+      "word": "ctpClose end",
+      "mode": "exclude",
+      "reason": "exclude-mode-not-directly-supported"
+    },
+    {
+      "key": "k57",
+      "type": "iPushViewer",
+      "reason": "non-log-monitor-ignored"
+    },
+    {
+      "key": "k58",
+      "type": "ACViewer",
+      "reason": "non-log-monitor-ignored"
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 import { CheckCircleOutlined, FileSearchOutlined, ImportOutlined, UploadOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Checkbox, Col, Form, Input, Modal, Row, Select, Space, Statistic, Table, Tag, Typography, Upload, message } from 'antd'
+import { Alert, Button, Card, Checkbox, Col, Form, Input, Modal, Radio, Row, Select, Space, Statistic, Table, Tag, Typography, Upload, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { UploadFile } from 'antd/es/upload/interface'
 import { useEffect, useMemo, useState } from 'react'
@@ -32,6 +32,7 @@ interface ImportFormValues {
   daysOfWeek?: number[]
   holidayMode?: 'ignore' | 'include' | 'exclude'
   holidaysText?: string
+  importEnabled?: boolean
 }
 
 async function readText(file: File) {
@@ -62,13 +63,14 @@ export default function Xm2Converter() {
   const [loading, setLoading] = useState(false)
   const [importing, setImporting] = useState(false)
   const hostScope = Form.useWatch('hostScope', form) ?? 'group'
+  const importEnabled = Form.useWatch('importEnabled', form) ?? false
 
   const hostOptions = useMemo(() => hosts.map((host) => ({ label: `${host.ip} / ${host.hostname}`, value: host.id })), [hosts])
   const groupOptions = useMemo(() => Array.from(new Set(hosts.map((host) => host.group).filter(Boolean))).sort().map((group) => ({ label: group, value: group })), [hosts])
   const selectedCandidates = useMemo(() => (preview?.candidates ?? []).filter((item) => selectedKeys.includes(item.key)), [preview, selectedKeys])
 
   useEffect(() => {
-    form.setFieldsValue({ hostScope: 'group', daysOfWeek: [1, 2, 3, 4, 5], holidayMode: 'ignore' })
+    form.setFieldsValue({ hostScope: 'group', daysOfWeek: [1, 2, 3, 4, 5], holidayMode: 'ignore', importEnabled: false })
     queryHosts({}).then(setHosts).catch(() => setHosts([]))
   }, [form])
 
@@ -92,7 +94,7 @@ export default function Xm2Converter() {
   }
 
   const validateHostScope = async () => {
-    const values = await form.validateFields(['hostScope', 'hostId', 'hostIds', 'hostGroup'])
+    const values = await form.validateFields(['hostScope', 'hostId', 'hostIds', 'hostGroup', 'importEnabled'])
     if (values.hostScope === 'single' && !values.hostId) throw new Error('请选择主机')
     if (values.hostScope === 'multiple' && !values.hostIds?.length) throw new Error('请选择至少一台主机')
     if (values.hostScope === 'group' && !values.hostGroup) throw new Error('请选择主机组')
@@ -114,7 +116,7 @@ export default function Xm2Converter() {
 
     Modal.confirm({
       title: '确认导入 xm2 日志监控规则？',
-      content: `将导入 ${selectedCandidates.length} 条规则，导入后默认停用，统一应用当前主机范围。`,
+      content: `将导入 ${selectedCandidates.length} 条规则，导入后${values.importEnabled ? '立即启用' : '保持停用'}，统一应用当前主机范围。`,
       okText: '确认导入',
       cancelText: '取消',
       onOk: async () => {
@@ -122,6 +124,7 @@ export default function Xm2Converter() {
         try {
           const result = await importXm2MonitorRules({
             rules: selectedCandidates.map((item) => item.rule),
+            enabled: Boolean(values.importEnabled),
             hostScope: values.hostScope,
             hostId: values.hostId,
             hostIds: values.hostIds,
@@ -131,7 +134,7 @@ export default function Xm2Converter() {
             holidays: splitLines(values.holidaysText),
           })
           if (result.failed.length) message.warning(`导入完成：成功 ${result.imported.length} 条，失败 ${result.failed.length} 条`)
-          else message.success(`导入完成：成功 ${result.imported.length} 条，规则默认停用`)
+          else message.success(`导入完成：成功 ${result.imported.length} 条，规则已${values.importEnabled ? '启用' : '停用'}`)
         } catch (error) {
           message.error(getErrorMessage(error, 'xm2 导入失败'))
         } finally {
@@ -147,7 +150,7 @@ export default function Xm2Converter() {
     { title: '关键字', width: 180, render: (_, record) => record.rule.keywords.map((keyword) => <Tag key={keyword}>{keyword}</Tag>) },
     { title: '阈值/窗口', width: 130, render: (_, record) => `${record.rule.threshold} 次 / ${record.rule.windowMinutes} 分钟` },
     { title: '时间段', width: 180, render: (_, record) => timeText(record.rule) },
-    { title: '状态', width: 100, render: () => <Tag color="default">默认停用</Tag> },
+    { title: '导入状态', width: 110, render: () => <Tag color={importEnabled ? 'green' : 'default'}>{importEnabled ? '导入后启用' : '导入后停用'}</Tag> },
     { title: '提示', width: 180, render: (_, record) => record.warnings.length ? <Typography.Text type="warning">{record.warnings.join('；')}</Typography.Text> : '-' },
   ]
 
@@ -166,15 +169,15 @@ export default function Xm2Converter() {
         <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
           <div>
             <Typography.Title level={3}>xm2 转换</Typography.Title>
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>上传或粘贴旧 monitor.json，只转换文件内容包含类日志监控，先预览再批量导入为停用规则。</Typography.Paragraph>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>上传或粘贴旧 monitor.json，只转换文件内容包含类日志监控，先预览再选择导入后启用或停用。</Typography.Paragraph>
           </div>
           <Button icon={<FileSearchOutlined />} onClick={() => navigate('/log-monitoring')}>查看日志监控</Button>
         </div>
       </Card>
 
-      <Alert type="info" showIcon message="安全策略" description="只转换 type=fileContent 且 mode=include 的规则；exclude 和非日志监控只进入跳过报告。导入后的规则统一默认停用，需要确认采集路径和阈值后再启用。" />
+      <Alert type="info" showIcon message="安全策略" description="只转换 type=fileContent 且 mode=include 的规则；exclude 和非日志监控只进入跳过报告。导入前可选择规则启用状态；如不确定采集路径和阈值，建议先停用导入，确认后再启用。" />
 
-      <Form form={form} layout="vertical" initialValues={{ hostScope: 'group' }}>
+      <Form form={form} layout="vertical" initialValues={{ hostScope: 'group', importEnabled: false }}>
         <Row gutter={[16, 16]}>
           <Col xs={24} xl={14}>
             <Card title="1. 上传或粘贴 monitor.json">
@@ -222,7 +225,10 @@ export default function Xm2Converter() {
               <Form.Item name="holidaysText" label="指定假日">
                 <Input.TextArea rows={3} placeholder="每行一个日期，例如 2026-05-01" />
               </Form.Item>
-              <Typography.Paragraph type="secondary">导入时会把主机范围、星期和假日策略应用到全部选中规则。日志采集规则不会自动创建，请确认对应主机或主机组已采集这些文件路径。</Typography.Paragraph>
+              <Form.Item name="importEnabled" label="导入后状态" tooltip="选择启用会让导入的监控规则立即参与评估和告警；不确定时建议选择停用。">
+                <Radio.Group optionType="button" buttonStyle="solid" options={[{ label: '导入后停用', value: false }, { label: '导入后启用', value: true }]} />
+              </Form.Item>
+              <Typography.Paragraph type="secondary">导入时会把主机范围、星期、假日策略和启用状态应用到全部选中规则。日志采集规则不会自动创建，请确认对应主机或主机组已采集这些文件路径。</Typography.Paragraph>
             </Card>
           </Col>
         </Row>

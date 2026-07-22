@@ -6,6 +6,7 @@ import authRouter from './routes/auth.ts'
 import accountsRouter from './routes/accounts.ts'
 import alertsRouter from './routes/alerts.ts'
 import cgiMonitorsRouter from './routes/cgiMonitors.ts'
+import sslCertificatesRouter from './routes/sslCertificates.ts'
 import hostResourceMonitorsRouter from './routes/hostResourceMonitors.ts'
 import healthReportsRouter from './routes/healthReports.ts'
 import webhooksRouter from './routes/webhooks.ts'
@@ -25,6 +26,7 @@ import { errorHandler } from './middleware/errorHandler.ts'
 import { traceMiddleware } from './middleware/trace.ts'
 import { startHostPullScheduler } from './services/hostPullScheduler.ts'
 import { startCgiMonitorEvaluator } from './services/cgiMonitorEvaluator.ts'
+import { startSslCertificateScheduler } from './services/sslCertificateScheduler.ts'
 import { startLogMonitorEvaluator } from './services/logMonitorEvaluator.ts'
 import { startLogRetentionScheduler } from './services/logRetentionScheduler.ts'
 import { startHealthReportScheduler } from './services/healthReportScheduler.ts'
@@ -75,6 +77,7 @@ app.use('/api/auth', authRouter)
 app.use('/api/accounts', accountsRouter)
 app.use('/api/alerts', alertsRouter)
 app.use('/api/cgi-monitors', cgiMonitorsRouter)
+app.use('/api/ssl-certificates', sslCertificatesRouter)
 app.use('/api/host-resource-monitors', hostResourceMonitorsRouter)
 app.use('/api/health-reports', healthReportsRouter)
 app.use('/api/notifications', notificationsRouter)
@@ -98,6 +101,7 @@ server.listen(port, () => {
   startLogRetentionScheduler()
   startHealthReportScheduler()
   startCgiMonitorEvaluator()
+  startSslCertificateScheduler()
   startHostOfflineWatchdog()
   startAgentLogUploadWatchdog()
   cleanupLinuxServiceMonitoring()

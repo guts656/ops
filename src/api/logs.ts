@@ -63,7 +63,7 @@ export async function previewXm2MonitorJson(values: { rawJson?: string; content?
   return response.data.data
 }
 
-export async function importXm2MonitorRules(values: { rules: LogMonitorRuleInput[]; hostScope: LogMonitorHostScope; hostId?: string; hostIds?: string[]; hostGroup?: string; daysOfWeek?: number[]; holidayMode?: LogMonitorRuleInput['holidayMode']; holidays?: string[] }): Promise<Xm2ImportResult> {
+export async function importXm2MonitorRules(values: { rules: LogMonitorRuleInput[]; enabled?: boolean; hostScope: LogMonitorHostScope; hostId?: string; hostIds?: string[]; hostGroup?: string; daysOfWeek?: number[]; holidayMode?: LogMonitorRuleInput['holidayMode']; holidays?: string[] }): Promise<Xm2ImportResult> {
   const response = await http.post<{ data: Xm2ImportResult }>('/logs/xm2-convert/import', values)
   return response.data.data
 }

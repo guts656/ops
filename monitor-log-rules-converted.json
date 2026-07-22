@@ -1,0 +1,1042 @@
+[
+  {
+    "name": "GQRestore setMapEntry < 0",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\GQRestore_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\GQRestore_%Y%m%d.log",
+    "keywords": [
+      "setMapEntry < 0"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "00:00",
+        "end": "09:30"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k20",
+      "type": "fileContent",
+      "hhmm": "0000-0930",
+      "interval": "60",
+      "mode": "include",
+      "handle": "注: mmap 异常，通知Rudy"
+    }
+  },
+  {
+    "name": "ctpapijni ctpClose",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+    "keywords": [
+      "ctpClose"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:30",
+        "end": "15:45"
+      },
+      {
+        "start": "20:30",
+        "end": "23:59"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k21",
+      "type": "fileContent",
+      "hhmm": "0830-1545;2030-2359",
+      "interval": "60",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "ctpapijni OnFrontDisconnected",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+    "keywords": [
+      "OnFrontDisconnected"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:35",
+        "end": "15:45"
+      },
+      {
+        "start": "20:35",
+        "end": "23:59"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k22",
+      "type": "fileContent",
+      "hhmm": "0835-1545;2035-2359",
+      "interval": "60",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "ctpapijni getinslist.size=0",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+    "keywords": [
+      "getinslist.size=0"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:30",
+        "end": "21:00"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k23",
+      "type": "fileContent",
+      "hhmm": "0830-2100",
+      "interval": "60",
+      "mode": "include",
+      "handle": "异常时，开盘前重启procCTPFut服务直到取到商品列表为止。若盘前一直无法取得，则在开盘前关闭对应的src"
+    }
+  },
+  {
+    "name": "GQRestore [ERROR]",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\GQRestore_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\GQRestore_%Y%m%d.log",
+    "keywords": [
+      "[ERROR]"
+    ],
+    "threshold": 1,
+    "windowMinutes": 10,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:45",
+        "end": "09:30"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k24",
+      "type": "fileContent",
+      "hhmm": "0845-0930",
+      "interval": "600",
+      "mode": "include",
+      "handle": "1）restore空间小于25%，会有error\n2）是mmap异常\n注：\n1、查看日志是选项1）九点半之后直接点掉监控即可\n2、查看日志是选项2）运维处理不了要找开发"
+    }
+  },
+  {
+    "name": "procCTPFut_night doReconnectCTP",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\procCTPFut_night_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\procCTPFut_night_%Y%m%d.log",
+    "keywords": [
+      "doReconnectCTP"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "20:30",
+        "end": "23:59"
+      },
+      {
+        "start": "00:01",
+        "end": "02:30"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k25",
+      "type": "fileContent",
+      "hhmm": "2030-2359;0001-0230",
+      "interval": "60",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "ctpapijni2 ctpClose",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+    "keywords": [
+      "ctpClose"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:30",
+        "end": "15:45"
+      },
+      {
+        "start": "20:30",
+        "end": "23:59"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k26",
+      "type": "fileContent",
+      "hhmm": "0830-1545;2030-2359",
+      "interval": "60",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "ctpapijni2 OnFrontDisconnected",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+    "keywords": [
+      "OnFrontDisconnected"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:35",
+        "end": "15:45"
+      },
+      {
+        "start": "20:35",
+        "end": "23:59"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k27",
+      "type": "fileContent",
+      "hhmm": "0835-1545;2035-2359",
+      "interval": "60",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "ctpapijni2 getinslist.size=0",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+    "keywords": [
+      "getinslist.size=0"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:30",
+        "end": "21:00"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k28",
+      "type": "fileContent",
+      "hhmm": "0830-2100",
+      "interval": "60",
+      "mode": "include",
+      "handle": "异常时，开盘前重启procCTPFut2服务直到取到商品列表为止。若盘前一直无法取得，则在开盘前关闭对应的src"
+    }
+  },
+  {
+    "name": "procCTPFut2_night doReconnectCTP",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\procCTPFut2_night_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\procCTPFut2_night_%Y%m%d.log",
+    "keywords": [
+      "doReconnectCTP"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "20:30",
+        "end": "23:59"
+      },
+      {
+        "start": "00:01",
+        "end": "02:30"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k29",
+      "type": "fileContent",
+      "hhmm": "2030-2359;0001-0230",
+      "interval": "60",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "jetty.stderrout java.lang.OutOfMemoryError",
+    "description": "Imported from legacy monitor: C:\\Program Files\\jetty-distribution-9.3.9.v20160517\\logs\\jetty.stderrout.log",
+    "enabled": false,
+    "source": "C:\\Program Files\\jetty-distribution-9.3.9.v20160517\\logs\\jetty.stderrout.log",
+    "keywords": [
+      "java.lang.OutOfMemoryError"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k30",
+      "type": "fileContent",
+      "hhmm": "0000-2400",
+      "interval": "60",
+      "mode": "include",
+      "handle": "注：不是盘中直接重启服务JettyService，盘中的话先发运维群"
+    }
+  },
+  {
+    "name": "ctpapijni bDoneGetInsList=-1",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+    "keywords": [
+      "bDoneGetInsList=-1"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:31",
+        "end": "23:59"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k31",
+      "type": "fileContent",
+      "hhmm": "0831-2400",
+      "interval": "60",
+      "mode": "include",
+      "handle": "上手1异常，连续警报3次请联系运维"
+    }
+  },
+  {
+    "name": "ctpapijni2 bDoneGetInsList=-1",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+    "keywords": [
+      "bDoneGetInsList=-1"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:31",
+        "end": "23:59"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k32",
+      "type": "fileContent",
+      "hhmm": "0831-2400",
+      "interval": "60",
+      "mode": "include",
+      "handle": "上手2异常，连续警报3次请联系运维"
+    }
+  },
+  {
+    "name": "ctpapijni ERROR",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+    "keywords": [
+      "ERROR"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:31",
+        "end": "23:59"
+      },
+      {
+        "start": "00:00",
+        "end": "03:00"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k40",
+      "type": "fileContent",
+      "hhmm": "0831-0300",
+      "interval": "60",
+      "mode": "include",
+      "handle": "重启Ice_GQSvcCTPFut和Ice_GQSvcCTPFut_Night服务\n连续警报3次请联系运维"
+    }
+  },
+  {
+    "name": "ctpapijni2 ERROR",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+    "keywords": [
+      "ERROR"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:31",
+        "end": "23:59"
+      },
+      {
+        "start": "00:00",
+        "end": "03:00"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k41",
+      "type": "fileContent",
+      "hhmm": "0831-0300",
+      "interval": "60",
+      "mode": "include",
+      "handle": "重启Ice_GQSvcCTPFut2和Ice_GQSvcCTPFut2_Night服务\n连续警报3次请联系运维"
+    }
+  },
+  {
+    "name": "ctpapijni ErrorMsg",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\ctpapijni_%Y%m%d.log",
+    "keywords": [
+      "ErrorMsg"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:30",
+        "end": "09:00"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k42",
+      "type": "fileContent",
+      "hhmm": "0830-0900",
+      "interval": "60",
+      "mode": "include",
+      "handle": "取不到商品列表\n若出現需要重啟程式"
+    }
+  },
+  {
+    "name": "ctpapijni2 ErrorMsg",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\ctpapijni2_%Y%m%d.log",
+    "keywords": [
+      "ErrorMsg"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:30",
+        "end": "09:00"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k43",
+      "type": "fileContent",
+      "hhmm": "0830-0900",
+      "interval": "60",
+      "mode": "include",
+      "handle": "取不到商品列表\n若出現需要重啟程式"
+    }
+  },
+  {
+    "name": "mux_log drop",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\Log\\mux_log%Y%m%d.txt",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\Log\\mux_log%Y%m%d.txt",
+    "keywords": [
+      "drop"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k44",
+      "type": "fileContent",
+      "hhmm": "0000-2400",
+      "interval": "60",
+      "mode": "include",
+      "handle": "注：mux丢tick 了 ，找rudy看"
+    }
+  },
+  {
+    "name": "procCTPFut_night error: channel bomb",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\procCTPFut_night_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\procCTPFut_night_%Y%m%d.log",
+    "keywords": [
+      "error: channel bomb"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "20:30",
+        "end": "23:59"
+      },
+      {
+        "start": "00:01",
+        "end": "02:30"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k45",
+      "type": "fileContent",
+      "hhmm": "2030-2359;0001-0230",
+      "interval": "60",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "procCTPFut error: channel bom",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\procCTPFut_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\procCTPFut_%Y%m%d.log",
+    "keywords": [
+      "error: channel bom"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:35",
+        "end": "15:00"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k46",
+      "type": "fileContent",
+      "hhmm": "0835-1500",
+      "interval": "60",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "procCTPFut2_night error: channel bomb",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\procCTPFut2_night_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\procCTPFut2_night_%Y%m%d.log",
+    "keywords": [
+      "error: channel bomb"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "20:30",
+        "end": "23:59"
+      },
+      {
+        "start": "00:01",
+        "end": "02:30"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k47",
+      "type": "fileContent",
+      "hhmm": "2030-2359;0001-0230",
+      "interval": "60",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "procCTPFut2 error: channel bom",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\Log\\procCTPFut2_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\Log\\procCTPFut2_%Y%m%d.log",
+    "keywords": [
+      "error: channel bom"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [
+      {
+        "start": "08:35",
+        "end": "15:00"
+      }
+    ],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k48",
+      "type": "fileContent",
+      "hhmm": "0835-1500",
+      "interval": "60",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "GQRestore failed",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\GQRestore_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\GQRestore_%Y%m%d.log",
+    "keywords": [
+      "failed"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k49",
+      "type": "fileContent",
+      "hhmm": "0000-2400",
+      "interval": "60",
+      "mode": "include",
+      "handle": "mmap异常，通知rudy"
+    }
+  },
+  {
+    "name": "GQRestore ERROR",
+    "description": "Imported from legacy monitor: c:\\IceLog\\GQuote\\log\\GQRestore_%Y%m%d.log",
+    "enabled": true,
+    "source": "c:\\IceLog\\GQuote\\log\\GQRestore_%Y%m%d.log",
+    "keywords": [
+      "ERROR"
+    ],
+    "threshold": 1,
+    "windowMinutes": 2,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k50",
+      "type": "fileContent",
+      "hhmm": "0000-2400",
+      "interval": "120",
+      "mode": "include",
+      "handle": "暂时不用管"
+    }
+  },
+  {
+    "name": "GQComm ERROR",
+    "description": "Imported from legacy monitor: c:\\IceLog\\GQuote\\log\\GQComm_%Y%m%d.log",
+    "enabled": true,
+    "source": "c:\\IceLog\\GQuote\\log\\GQComm_%Y%m%d.log",
+    "keywords": [
+      "ERROR"
+    ],
+    "threshold": 1,
+    "windowMinutes": 2,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k51",
+      "type": "fileContent",
+      "hhmm": "0000-2400",
+      "interval": "120",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "GQComm DropTick",
+    "description": "Imported from legacy monitor: c:\\IceLog\\GQuote\\log\\GQComm_%Y%m%d.log",
+    "enabled": true,
+    "source": "c:\\IceLog\\GQuote\\log\\GQComm_%Y%m%d.log",
+    "keywords": [
+      "DropTick"
+    ],
+    "threshold": 1,
+    "windowMinutes": 3,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k52",
+      "type": "fileContent",
+      "hhmm": "0000-2400",
+      "interval": "160",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "GQSrcHZ_2 open error",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\GQSrcHZ_2_%Y%m%d.log",
+    "enabled": false,
+    "source": "C:\\IceLog\\GQuote\\log\\GQSrcHZ_2_%Y%m%d.log",
+    "keywords": [
+      "open error"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k53",
+      "type": "fileContent",
+      "hhmm": "0000-2400",
+      "interval": "60",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "GQSrc1 open error",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\GQSrc1_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\GQSrc1_%Y%m%d.log",
+    "keywords": [
+      "open error"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k54",
+      "type": "fileContent",
+      "hhmm": "0000-2400",
+      "interval": "60",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "GQSrc2 open error",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\GQSrc2_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\GQSrc2_%Y%m%d.log",
+    "keywords": [
+      "open error"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k55",
+      "type": "fileContent",
+      "hhmm": "0000-2400",
+      "interval": "60",
+      "mode": "include",
+      "handle": ""
+    }
+  },
+  {
+    "name": "GQRestoreTbl ERROR",
+    "description": "Imported from legacy monitor: C:\\IceLog\\GQuote\\log\\GQRestoreTbl_%Y%m%d.log",
+    "enabled": true,
+    "source": "C:\\IceLog\\GQuote\\log\\GQRestoreTbl_%Y%m%d.log",
+    "keywords": [
+      "ERROR"
+    ],
+    "threshold": 1,
+    "windowMinutes": 1,
+    "cooldownMinutes": 30,
+    "alertLevel": "警告",
+    "hostScope": "all",
+    "timeRanges": [],
+    "holidayMode": "ignore",
+    "holidays": [],
+    "notification": {
+      "channels": [
+        "站内告警"
+      ]
+    },
+    "legacy": {
+      "key": "k56",
+      "type": "fileContent",
+      "hhmm": "0000-2400",
+      "interval": "60",
+      "mode": "include",
+      "handle": ""
+    }
+  }
+]

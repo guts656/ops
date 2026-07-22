@@ -153,6 +153,8 @@ async function resolveContainerAlert(host: HostSummary, container: HostContainer
 async function syncContainerAlert(host: HostSummary, container: HostContainerRow, previousState?: string) {
   if (container.retiredReason === 'superseded_by_active_container') return
   const currentState = normalizedState(container.state)
+  const previous = normalizedState(previousState)
+  if (!container.isCurrent && (currentState === 'missing' || currentState === 'removed') && previous === currentState) return
   if (isHealthyContainerState(currentState)) await resolveContainerAlert(host, container, previousState, currentState)
   else if (isAbnormalContainerState(currentState)) await createContainerAlert(host, container, previousState, currentState)
 }

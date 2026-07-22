@@ -395,6 +395,68 @@ model CgiMonitorAlert {
   @@map("cgi_monitor_alerts")
 }
 
+model SslCertificateMonitor {
+  id              String                  @id @default(cuid())
+  name            String
+  description     String                  @default("")
+  enabled         Boolean                 @default(true)
+  domain          String
+  serverIp        String?                 @map("server_ip")
+  port            Int                     @default(443)
+  issuer          String                  @default("")
+  validFrom       DateTime?               @map("valid_from")
+  validTo         DateTime?               @map("valid_to")
+  remainingDays   Int?                    @map("remaining_days")
+  domainMatched   Boolean                 @default(false) @map("domain_matched")
+  status          String                  @default("unknown")
+  thresholds      Int[]                   @default([30, 15, 7])
+  checkTime       String                  @default("08:30") @map("check_time")
+  alertLevel      String                  @default("警告") @map("alert_level")
+  notification    Json                    @default("{}")
+  lastCheckedAt   DateTime?               @map("last_checked_at")
+  nextCheckAt     DateTime?               @map("next_check_at")
+  lastTriggeredAt DateTime?               @map("last_triggered_at")
+  triggerCount    Int                     @default(0) @map("trigger_count")
+  lastError       String?                 @map("last_error")
+  histories       SslCertificateHistory[]
+  createdAt       DateTime                @default(now()) @map("created_at")
+  updatedAt       DateTime                @updatedAt @map("updated_at")
+
+  @@index([enabled])
+  @@index([domain])
+  @@index([status])
+  @@index([nextCheckAt])
+  @@index([lastCheckedAt])
+  @@map("ssl_certificate_monitors")
+}
+
+model SslCertificateHistory {
+  id                  String                @id @default(cuid())
+  monitorId           String                @map("monitor_id")
+  alertId             String?               @map("alert_id")
+  domain              String
+  serverIp            String?               @map("server_ip")
+  port                Int
+  checkedAt           DateTime              @map("checked_at")
+  status              String
+  issuer              String                @default("")
+  validFrom           DateTime?             @map("valid_from")
+  validTo             DateTime?             @map("valid_to")
+  remainingDays       Int?                  @map("remaining_days")
+  domainMatched       Boolean               @map("domain_matched")
+  alertLevel          String                @map("alert_level")
+  matchedThreshold    Int?                  @map("matched_threshold")
+  notificationResults String[]              @default([]) @map("notification_results")
+  errorMessage        String?               @map("error_message")
+  monitor             SslCertificateMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  createdAt           DateTime              @default(now()) @map("created_at")
+
+  @@index([monitorId, checkedAt])
+  @@index([alertId])
+  @@index([status])
+  @@map("ssl_certificate_histories")
+}
+
 model Host {
   id               String              @id
   ip               String              @unique

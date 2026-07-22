@@ -109,6 +109,7 @@ const xm2PreviewSchema = z.object({
 
 const xm2ImportSchema = z.object({
   rules: z.array(monitorRuleSchema).min(1).max(200),
+  enabled: z.boolean().default(false),
   hostScope: hostScopeSchema.default('all'),
   hostId: z.string().trim().optional(),
   hostIds: z.array(z.string().trim().min(1)).max(200).optional(),
@@ -226,7 +227,7 @@ router.post('/xm2-convert/import', requirePermission(PERMISSIONS.LOGS_MANAGE), a
       try {
         const payload = normalizeMonitorRuleInput(monitorRuleSchema.parse({
           ...rule,
-          enabled: false,
+          enabled: input.enabled,
           hostScope: input.hostScope,
           hostId: input.hostScope === 'single' ? input.hostId || hostIds[0] : undefined,
           hostIds: input.hostScope === 'multiple' ? hostIds : input.hostScope === 'single' && (input.hostId || hostIds[0]) ? [input.hostId || hostIds[0]] : [],
