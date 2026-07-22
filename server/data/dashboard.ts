@@ -248,14 +248,14 @@ export async function getDashboardData() {
   const tradingSessionSettings = await getDashboardTradingSessionSettings()
   const resourceWindowStart = new Date(Date.now() - tradingSessionSettings.windowDays * 24 * 60 * 60 * 1000)
 
-  const hostSelect = { id: true, ip: true, hostname: true, status: true, os: true, group: true, marketType: true, maintenanceEnabled: true }
+  const hostSelect = { id: true, ip: true, hostname: true, status: true, os: true, group: true, maintenanceEnabled: true }
   const [
     hosts, activeAlerts, todayAlerts, trendAlerts,
     hostServices, hostContainers, errorLogs, serviceAlerts, recentAlerts,
     batchJobs, selfHealingRules, logMonitorRules,
     recentBatchJobs, recentSelfHealing, resourcePoints,
   ] = await Promise.all([
-    prisma.host.findMany({ select: { id: true, ip: true, hostname: true, cpu: true, memory: true, disk: true, status: true, os: true, marketType: true } }),
+    prisma.host.findMany({ select: { id: true, ip: true, hostname: true, cpu: true, memory: true, disk: true, status: true, os: true } }),
     prisma.alert.count({ where: { status: { not: '已解决' }, isSuppressed: false } }),
     prisma.alert.count({ where: { createdAt: { gte: startOfToday }, isSuppressed: false } }),
     prisma.alert.findMany({ where: { createdAt: { gte: startOfTrend }, isSuppressed: false }, select: { createdAt: true } }),
@@ -285,13 +285,13 @@ export async function getDashboardData() {
     prisma.selfHealingExecution.findMany({ orderBy: { createdAt: 'desc' }, take: 5 }),
     prisma.hostResourcePoint.findMany({
       where: { sampledAt: { gte: resourceWindowStart }, host: { status: '在线', maintenanceEnabled: false } },
-      select: { sampledAt: true, cpu: true, memory: true, disk: true, host: { select: { marketType: true } } },
+      select: { sampledAt: true, cpu: true, memory: true, disk: true },
     }),
   ])
 
   const onlineHosts = hosts.filter((host) => host.status === '在线').length
   const hostOnlineRate = hosts.length ? (onlineHosts / hosts.length) * 100 : 100
-  const tradingResourcePoints = resourcePoints.filter((point) => isTradingTime(point.sampledAt, point.host.marketType, tradingSessionSettings))
+  const tradingResourcePoints = resourcePoints.filter((point) => isTradingTime(point.sampledAt, 'CN_INTERNAL', tradingSessionSettings))
   const fallbackResources = averageResources(hosts.map((host) => ({ cpu: host.cpu, memory: host.memory, disk: host.disk })))
   const resourceAverages = tradingResourcePoints.length ? averageResources(tradingResourcePoints) : fallbackResources
   const avgCpu = resourceAverages.cpu
