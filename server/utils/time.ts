@@ -11,6 +11,7 @@ const shanghaiFormatter = new Intl.DateTimeFormat('zh-CN', {
 })
 
 export function shanghaiTime(date: Date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '-'
   const parts = Object.fromEntries(shanghaiFormatter.formatToParts(date).map((part) => [part.type, part.value]))
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
 }

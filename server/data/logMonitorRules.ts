@@ -215,21 +215,23 @@ function keywordWhere(keywords: string[]) {
   return keywords.map((keyword) => ({ message: { contains: keyword, mode: 'insensitive' as const } }))
 }
 
-async function resolveRuleHostFilter(rule: LogMonitorRule): Promise<{ hostId?: Prisma.AppLogWhereInput['hostId']; skippedReason?: string }> {
+type RuleHostFilter = { hostId?: Prisma.AppLogWhereInput['hostId']; targetHostIds?: string[]; skippedReason?: string }
+
+async function resolveRuleHostFilter(rule: LogMonitorRule): Promise<RuleHostFilter> {
   const scope = rule.hostScope ?? (rule.hostId ? 'single' : 'all')
   if (scope === 'all') return {}
   if (scope === 'single') {
     const hostId = rule.hostId || rule.hostIds[0]
-    return hostId ? { hostId } : { skippedReason: '未选择主机' }
+    return hostId ? { hostId, targetHostIds: [hostId] } : { skippedReason: '未选择主机' }
   }
   if (scope === 'multiple') {
     const hostIds = Array.from(new Set(rule.hostIds.filter(Boolean)))
-    return hostIds.length ? { hostId: { in: hostIds } } : { skippedReason: '未选择主机' }
+    return hostIds.length ? { hostId: { in: hostIds }, targetHostIds: hostIds } : { skippedReason: '未选择主机' }
   }
   if (!rule.hostGroup) return { skippedReason: '未选择主机组' }
   const hosts = await prisma.host.findMany({ where: { group: rule.hostGroup }, select: { id: true } })
   const hostIds = hosts.map((host) => host.id)
-  return hostIds.length ? { hostId: { in: hostIds } } : { skippedReason: '主机组暂无主机' }
+  return hostIds.length ? { hostId: { in: hostIds }, targetHostIds: hostIds } : { skippedReason: '主机组暂无主机' }
 }
 
 function targetText(rule: LogMonitorRule) {
@@ -252,6 +254,32 @@ async function activeMaintenanceHostIds(hostIds: string[], date: Date) {
   const uniqueHostIds = Array.from(new Set(hostIds.filter(Boolean)))
   const entries = await Promise.all(uniqueHostIds.map(async (hostId) => [hostId, await isHostInMaintenance(hostId, date)] as const))
   return entries.filter(([, active]) => active).map(([hostId]) => hostId)
+}
+
+async function createNoDataAlertForRule(rule: LogMonitorRule, hostFilter: RuleHostFilter, windowStart: Date, windowEnd: Date) {
+  const targetHostIds = hostFilter.targetHostIds ?? []
+  if (!targetHostIds.length) return undefined
+  const hosts = await prisma.host.findMany({ where: { id: { in: targetHostIds } }, select: { id: true, ip: true, hostname: true, lastHeartbeat: true } })
+  const hostText = hosts.map((host) => `${host.ip}(${host.hostname})`).join('、') || targetText(rule)
+  const source = rule.source || '未指定来源'
+  const content = `日志监控「${rule.name}」在 ${rule.windowMinutes} 分钟评估窗口内没有从目标主机读取到任何日志数据。\n\n目标范围：${hostText}\n日志来源/路径：${source}\n窗口：${shanghaiTime(windowStart)} ~ ${shanghaiTime(windowEnd)}\n\n这通常表示 Agent 日志采集路径不存在、无新增日志、文件被占用无法读取、计划任务未执行，或日志上传接口异常。日志采集恢复前，关键字/ERROR 日志监控无法可靠触发。`
+  const notificationResults = await sendMonitorNotifications({ ruleNotification: rule.notification, content: `【严重】日志采集无数据：${rule.name}\n${content}` })
+  const result = await ingestAlert({
+    level: rule.alertLevel === '提示' ? '警告' : rule.alertLevel,
+    time: nowText(windowEnd),
+    service: targetText(rule),
+    title: `日志采集无数据：${rule.name}`,
+    content,
+    owner: rule.notification.receivers || '日志监控',
+    source: '日志监控',
+    relatedType: 'log_monitor_rule',
+    relatedId: rule.id,
+    fingerprint: `log-monitor-no-data:${rule.id}:${targetHostIds.sort().join(',')}`,
+    outboundNotification: { channels: ['站内告警'] },
+    metadata: { ruleId: rule.id, ruleName: rule.name, hostScope: rule.hostScope, hostIds: targetHostIds, hostGroup: rule.hostGroup, source, windowStart: windowStart.toISOString(), windowEnd: windowEnd.toISOString(), notificationResults },
+  })
+  await prisma.logMonitorRule.update({ where: { id: rule.id }, data: { lastTriggeredAt: windowEnd, lastEvaluatedAt: windowEnd, triggerCount: result.alert ? { increment: 1 } : undefined } })
+  return result.alert
 }
 
 async function createAlertForRule(rule: LogMonitorRule, matchedCount: number, matchedKeywords: string[], sampleLogIds: string[], windowStart: Date, windowEnd: Date, matchedHostIds: string[] = []) {
@@ -447,6 +475,16 @@ export async function evaluateLogMonitorRule(rule: LogMonitorRule, date = new Da
   await prisma.logMonitorRule.update({ where: { id: rule.id }, data: { lastEvaluatedAt: date } })
 
   if (matchedCount < rule.threshold) {
+    if (hostFilter.targetHostIds?.length) {
+      const dataWhere: Prisma.AppLogWhereInput = { timestamp: { gte: windowStart, lte: date }, hostId: hostFilter.hostId }
+      if (rule.source) dataWhere.source = sourceWhere(rule.source, date)
+      if (rule.service) dataWhere.service = { equals: rule.service, mode: 'insensitive' }
+      const dataCount = await prisma.appLog.count({ where: dataWhere })
+      if (dataCount === 0) {
+        const alert = await createNoDataAlertForRule(rule, hostFilter, windowStart, date)
+        return { rule, matchedCount, matchedKeywords, sampleLogIds: sampleLogs.map((log) => log.id), triggered: Boolean(alert), skippedReason: alert ? '日志采集无数据' : undefined }
+      }
+    }
     return { rule, matchedCount, matchedKeywords, sampleLogIds: sampleLogs.map((log) => log.id), triggered: false }
   }
   const matchedHostIds = Array.from(new Set(sampleLogs.map((log) => log.hostId).filter(Boolean) as string[]))

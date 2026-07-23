@@ -17,6 +17,14 @@ function fingerprint(hostId: string, kind: string) {
   return `agent-log-upload:${kind}:${hostId}`
 }
 
+function parseHeartbeat(value: string | null) {
+  if (!value) return undefined
+  const normalized = value.trim().replace(/\//g, '-')
+  const localMatch = normalized.match(/^(\d{4}-\d{1,2}-\d{1,2})\s+(\d{1,2}:\d{2}:\d{2})$/)
+  const parsed = localMatch ? new Date(`${localMatch[1]}T${localMatch[2]}+08:00`) : new Date(normalized)
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed
+}
+
 async function createLogUploadAlert(input: {
   hostId: string
   hostName: string
@@ -82,7 +90,8 @@ export async function checkAgentLogUploadWatchdog() {
 
   let alerted = 0
   for (const host of hosts) {
-    if (host.lastHeartbeat && host.lastHeartbeat < since) continue
+    const lastHeartbeat = parseHeartbeat(host.lastHeartbeat)
+    if (lastHeartbeat && lastHeartbeat < since) continue
     const count = await prisma.appLog.count({ where: { hostId: host.id, timestamp: { gte: shanghaiToday } } })
     if (count > 0) continue
     await createLogUploadAlert({
@@ -92,7 +101,7 @@ export async function checkAgentLogUploadWatchdog() {
       kind: 'no-logs-today',
       title: 'Agent 日志长期未入库',
       content: `${host.hostname || host.ip} 已配置日志采集，但北京时间今天没有任何日志入库，请检查 Agent 计划任务、日志路径和上传接口。`,
-      metadata: { since: shanghaiToday.toISOString(), lastHeartbeat: host.lastHeartbeat ? shanghaiTime(host.lastHeartbeat) : undefined },
+      metadata: { since: shanghaiToday.toISOString(), lastHeartbeat: lastHeartbeat ? shanghaiTime(lastHeartbeat) : host.lastHeartbeat || undefined },
     })
     alerted += 1
   }
