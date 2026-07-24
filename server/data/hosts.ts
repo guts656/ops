@@ -85,8 +85,8 @@ function agentPublicUrl() {
 
 function agentBackendCandidates() {
   const candidates = [
-    ...localIpv4Urls(),
     process.env.OPS_AGENT_PUBLIC_URL,
+    ...localIpv4Urls(),
   ].filter(Boolean) as string[]
   return Array.from(new Set(candidates.map((candidate) => normalizeAgentBaseUrl(candidate))))
 }

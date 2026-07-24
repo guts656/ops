@@ -75,11 +75,34 @@ function normalizeWinrmError(error: unknown, input?: RemoteConnectionInput) {
   return raw
 }
 
+function isPlainWindowsUsername(username: string) {
+  return !username.includes('\\') && !username.includes('@')
+}
+
+function localNtlmUsername(username: string) {
+  return `.\\${username}`
+}
+
+function isWinrmAuthError(error: unknown) {
+  const raw = error instanceof Error ? error.message || error.name : String(error || '')
+  return /401|unauthorized|access is denied|拒绝访问/i.test(raw)
+}
+
 async function runNodeWinrmPowershell(input: RemoteConnectionInput, command: string) {
   if (input.authType !== '密码' || !input.password) throw new Error('Windows WinRM 暂只支持密码认证')
-  const output = await winrmClient.runPowershell(command, input.host, input.username, input.password, input.port)
-  if (output instanceof Error) throw output
-  return sanitizeText(String(output || ''))
+  const usernames = isPlainWindowsUsername(input.username) ? [localNtlmUsername(input.username), input.username] : [input.username]
+  let authError: unknown
+  for (const username of usernames) {
+    try {
+      const output = await winrmClient.runPowershell(command, input.host, username, input.password, input.port)
+      if (output instanceof Error) throw output
+      return sanitizeText(String(output || ''))
+    } catch (error) {
+      if (!isWinrmAuthError(error) || username === usernames[usernames.length - 1]) throw error
+      authError = error
+    }
+  }
+  throw authError ?? new Error('WinRM authentication failed')
 }
 
 function nodeWinrmResult(output: string, options: { truncateOutput?: boolean } = {}): RemoteCommandResult {
@@ -215,8 +238,12 @@ ${remoteScript}
 
 export async function testWinrmConnection(input: RemoteConnectionInput): Promise<RemoteCommandResult> {
   const result = await invokeRemoteScript(input, `
+    function Get-OpsWmi($className) {
+      if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) { return Get-CimInstance $className }
+      return Get-WmiObject $className
+    }
     $hostname = $env:COMPUTERNAME
-    $os = (Get-CimInstance Win32_OperatingSystem).Caption
+    $os = (Get-OpsWmi 'Win32_OperatingSystem' | Select-Object -First 1).Caption
     Write-Output "HOSTNAME=$hostname"
     Write-Output "OS=$os"
 `)

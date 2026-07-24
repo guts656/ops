@@ -677,6 +677,7 @@ function ConvertTo-OpsJson($value) {
     }
   }
   if ($objectParts.Count -gt 0) { return '{' + ($objectParts -join ',') + '}' }
+  if ($value -is [psobject]) { return '{}' }
   return '"' + (Escape-JsonString ([string]$value)) + '"'
 }
 $config = ConvertFrom-OpsJson (Read-AllText $configPath)
@@ -691,12 +692,16 @@ function New-AgentState {
   $state | Add-Member -MemberType NoteProperty -Name fileLogOffsets -Value (New-Object PSObject) -Force
   return $state
 }
+function New-EmptyObject { New-Object PSObject }
+function Is-ObjectState($value) {
+  return $null -ne $value -and -not ($value -is [string]) -and $null -ne $value.PSObject
+}
 function Ensure-AgentState($state) {
   if (-not $state) { $state = New-AgentState }
   if (-not $state.PSObject.Properties['failedServices']) { $state | Add-Member -MemberType NoteProperty -Name failedServices -Value @() -Force }
-  if (-not $state.PSObject.Properties['eventRecordIds']) { $state | Add-Member -MemberType NoteProperty -Name eventRecordIds -Value (New-Object PSObject) -Force }
+  if ((-not $state.PSObject.Properties['eventRecordIds']) -or -not (Is-ObjectState $state.eventRecordIds)) { $state | Add-Member -MemberType NoteProperty -Name eventRecordIds -Value (New-EmptyObject) -Force }
   if (-not $state.PSObject.Properties['runningServices']) { $state | Add-Member -MemberType NoteProperty -Name runningServices -Value @() -Force }
-  if (-not $state.PSObject.Properties['fileLogOffsets']) { $state | Add-Member -MemberType NoteProperty -Name fileLogOffsets -Value (New-Object PSObject) -Force }
+  if ((-not $state.PSObject.Properties['fileLogOffsets']) -or -not (Is-ObjectState $state.fileLogOffsets)) { $state | Add-Member -MemberType NoteProperty -Name fileLogOffsets -Value (New-EmptyObject) -Force }
   return $state
 }
 function Load-State {
@@ -711,6 +716,10 @@ function Compact-Text($value, $max) {
   $text = [string]$value
   if ($text.Length -gt $max) { return $text.Substring(0, $max) }
   return $text
+}
+function Is-Blank($value) {
+  if ($null -eq $value) { return $true }
+  return ([string]$value).Trim().Length -eq 0
 }
 function Get-Sha1Hex($text) {
   $sha1 = [System.Security.Cryptography.SHA1]::Create()
@@ -742,24 +751,37 @@ function Invoke-OpsHttp($method, $path, $bodyText) {
 function Post-Json($path, $payload) {
   Invoke-OpsHttp 'POST' $path (ConvertTo-OpsJson $payload) | Out-Null
 }
+function Get-LogField($item, $name) {
+  if ($item -is [System.Collections.IDictionary]) { return $item[$name] }
+  $property = $item.PSObject.Properties[$name]
+  if ($property) { return $property.Value }
+  return $null
+}
+function Set-LogField($item, $name, $value) {
+  if ($item -is [System.Collections.IDictionary]) {
+    $item[$name] = $value
+  } else {
+    $item | Add-Member -MemberType NoteProperty -Name $name -Value $value -Force
+  }
+  return $item
+}
 function Normalize-LogItem($item) {
   if ($null -eq $item) { return $null }
-  $message = Compact-Text $item.message 2000
-  if ([string]::IsNullOrWhiteSpace($message)) { return $null }
-  $service = [string]$item.service
-  if ([string]::IsNullOrWhiteSpace($service)) {
-    $sourceText = [string]$item.source
-    if (-not [string]::IsNullOrWhiteSpace($sourceText)) {
+  $message = Compact-Text (Get-LogField $item 'message') 2000
+  if (Is-Blank $message) { return $null }
+  $service = [string](Get-LogField $item 'service')
+  if (Is-Blank $service) {
+    $sourceText = [string](Get-LogField $item 'source')
+    if (-not (Is-Blank $sourceText)) {
       try { $service = [System.IO.Path]::GetFileNameWithoutExtension($sourceText) } catch {}
     }
-    if ([string]::IsNullOrWhiteSpace($service)) { $service = 'agent' }
+    if (Is-Blank $service) { $service = 'agent' }
   }
-  $level = [string]$item.level
+  $level = [string](Get-LogField $item 'level')
   if (@('ERROR', 'WARN', 'INFO', 'DEBUG') -notcontains $level) { $level = 'INFO' }
-  $item.service = Compact-Text $service 200
-  $item.level = $level
-  $item.message = $message
-  return $item
+  $item = Set-LogField $item 'service' (Compact-Text $service 200)
+  $item = Set-LogField $item 'level' $level
+  return Set-LogField $item 'message' $message
 }
 function Post-LogBatches($logs) {
   $items = @($logs | ForEach-Object { Normalize-LogItem $_ } | Where-Object { $null -ne $_ })
@@ -847,15 +869,45 @@ function Expand-DateTemplate($value) {
   $text = $text.Replace('%d', $now.ToString('dd'))
   return $text
 }
-function Get-ConfiguredLogFiles($pathValue) {
+function Add-LogFileCandidate($items, $seen, $item) {
+  if (-not $item -or $item.PSIsContainer) { return }
+  $fullName = [string]$item.FullName
+  if (Is-Blank $fullName) { return }
+  $key = $fullName.ToLowerInvariant()
+  if ($seen.ContainsKey($key)) { return }
+  $seen[$key] = $true
+  [void]$items.Add($item)
+}
+function Get-ConfiguredLogFiles($pathValue, $offsets) {
   $pathValue = Expand-DateTemplate $pathValue
   if (Test-Path -LiteralPath $pathValue -PathType Leaf) {
     return @(Get-Item -LiteralPath $pathValue -ErrorAction SilentlyContinue)
   }
   if (-not (Test-Path -LiteralPath $pathValue -PathType Container)) { return @() }
-  $cutoff = (Get-Date).AddDays(-7)
   $extensions = @('.log', '.txt', '.out', '.err')
-  return @(Get-ChildItem -LiteralPath $pathValue -Recurse -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer -and $extensions -contains $_.Extension.ToLowerInvariant() -and $_.LastWriteTime -ge $cutoff } | Sort-Object LastWriteTime -Descending | Select-Object -First 30)
+  $items = New-Object 'System.Collections.ArrayList'
+  $seen = @{}
+  if ($offsets -and $offsets.PSObject) {
+    try {
+      $rootPath = [System.IO.Path]::GetFullPath($pathValue)
+      if (-not $rootPath.EndsWith('\') -and -not $rootPath.EndsWith('/')) { $rootPath = $rootPath + '\' }
+      $rootLower = $rootPath.ToLowerInvariant()
+      foreach ($property in $offsets.PSObject.Properties) {
+        $name = [string]$property.Name
+        if (-not $name.StartsWith('v3:')) { continue }
+        $trackedPath = $name.Substring(3)
+        try { $trackedFull = [System.IO.Path]::GetFullPath($trackedPath) } catch { continue }
+        if (-not $trackedFull.ToLowerInvariant().StartsWith($rootLower)) { continue }
+        $trackedItem = Get-Item -LiteralPath $trackedFull -ErrorAction SilentlyContinue
+        if ($trackedItem -and -not $trackedItem.PSIsContainer -and $extensions -contains $trackedItem.Extension.ToLowerInvariant()) {
+          Add-LogFileCandidate $items $seen $trackedItem
+        }
+      }
+    } catch {}
+  }
+  $candidates = @(Get-ChildItem -LiteralPath $pathValue -Recurse -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer -and $extensions -contains $_.Extension.ToLowerInvariant() } | Sort-Object LastWriteTime -Descending | Select-Object -First 200)
+  foreach ($candidate in $candidates) { Add-LogFileCandidate $items $seen $candidate }
+  return @($items)
 }
 function Trim-TrailingCr($buffer) {
   if ($buffer.Length -gt 0 -and $buffer[$buffer.Length - 1] -eq 13) {
@@ -910,7 +962,7 @@ function Read-ConfiguredLogFile($pathKey, $last, $maxLines) {
         $tailOffset = [Math]::Max([int64]0, [int64]$stream.Length - 1048576)
         $tailIndex = 0
         foreach ($line in $tailLines) {
-          if (-not [string]::IsNullOrWhiteSpace([string]$line)) {
+          if (-not (Is-Blank $line)) {
             $lines += (New-LogReadEntry ($tailOffset + $tailIndex) ([string]$line) $stream.Length)
             $tailIndex += 1
           }
@@ -928,7 +980,7 @@ function Read-ConfiguredLogFile($pathKey, $last, $maxLines) {
           $nextOffset = $stream.Position
           $buffer = Trim-TrailingCr $bytes.ToArray()
           $line = [Text.Encoding]::UTF8.GetString([byte[]]$buffer)
-          if (-not [string]::IsNullOrWhiteSpace($line)) { $lines += (New-LogReadEntry $lineStart $line $nextOffset) }
+          if (-not (Is-Blank $line)) { $lines += (New-LogReadEntry $lineStart $line $nextOffset) }
           $bytes.Clear()
           $lineStart = $stream.Position
           $position = $nextOffset
@@ -940,7 +992,7 @@ function Read-ConfiguredLogFile($pathKey, $last, $maxLines) {
         $buffer = Trim-TrailingCr $bytes.ToArray()
         $line = [Text.Encoding]::UTF8.GetString([byte[]]$buffer)
         $nextOffset = $stream.Position
-        if (-not [string]::IsNullOrWhiteSpace($line)) { $lines += (New-LogReadEntry $lineStart $line $nextOffset) }
+        if (-not (Is-Blank $line)) { $lines += (New-LogReadEntry $lineStart $line $nextOffset) }
         $position = $nextOffset
       }
     } finally {
@@ -959,7 +1011,7 @@ function Collect-ConfiguredLogs($state) {
   $paths = if ($configResponse -and $configResponse.paths) { @($configResponse.paths) } else { @() }
   if (-not $state.fileLogOffsets) { $state | Add-Member -MemberType NoteProperty -Name fileLogOffsets -Value (New-Object PSObject) -Force }
   foreach ($pathValue in $paths | Select-Object -First 20) {
-    $items = @(Get-ConfiguredLogFiles $pathValue)
+    $items = @(Get-ConfiguredLogFiles $pathValue $state.fileLogOffsets)
     foreach ($item in $items) {
       $pathKey = $item.FullName
       $key = 'v3:' + $pathKey
@@ -969,12 +1021,12 @@ function Collect-ConfiguredLogs($state) {
       $result = Read-ConfiguredLogFile $pathKey $last 500
       foreach ($entry in @($result.Lines)) {
         $line = [string]$entry.Text
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if (Is-Blank $line) { continue }
         $level = Get-LogLevel $line
         $hashInput = $key + ':' + $entry.Offset + ':' + $line
         $hash = (Get-Sha1Hex $hashInput).Substring(0, 16)
         $serviceName = [System.IO.Path]::GetFileNameWithoutExtension($item.Name)
-        if ([string]::IsNullOrWhiteSpace($serviceName)) { $serviceName = if ($item.Name) { [string]$item.Name } else { 'file' } }
+        if (Is-Blank $serviceName) { $serviceName = if ($item.Name) { [string]$item.Name } else { 'file' } }
         $logs += @{ timestamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); service = $serviceName; level = $level; traceId = "file:$hash"; message = (Compact-Text $line 2000); source = $pathKey; labels = @{ logPath = $pathKey; offset = $entry.Offset } }
       }
       $state.fileLogOffsets | Add-Member -MemberType NoteProperty -Name $key -Value ([int64]$result.Position) -Force

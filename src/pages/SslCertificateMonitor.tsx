@@ -24,7 +24,8 @@ const statusColors: Record<SslCertificateStatus, string> = {
   unknown: 'default',
 }
 
-const channelOptions: Array<{ label: SslCertificateChannel; value: SslCertificateChannel }> = ['站内告警', '企业微信', '钉钉'].map((value) => ({ label: value, value }))
+const sslCertificateChannels: SslCertificateChannel[] = ['站内告警', '企业微信', '钉钉']
+const channelOptions: Array<{ label: SslCertificateChannel; value: SslCertificateChannel }> = sslCertificateChannels.map((value) => ({ label: value, value }))
 const alertLevelOptions: SslCertificatePlatformLevel[] = ['紧急', '严重', '警告', '提示']
 const defaultThresholds = [30, 15, 7]
 const thresholdOptions = [100, 80, 60, 30, 15, 7].map((value) => ({ value, label: `到期前 ${value} 天` }))

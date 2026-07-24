@@ -13,6 +13,7 @@ import PermissionGate from '../auth/PermissionGate'
 const alertLevelColor: Record<string, string> = { 紧急: 'red', 严重: 'volcano', 警告: 'gold', 提示: 'blue' }
 const metricLabel: Record<HostResourceMetric, string> = { cpu: 'CPU', memory: '内存', disk: '磁盘' }
 const metricColor: Record<HostResourceMetric, string> = { cpu: 'blue', memory: 'green', disk: 'gold' }
+type RuleStatusFilter = 'all' | 'enabled' | 'disabled'
 const dayOptions = [
   { label: '周一', value: 1 },
   { label: '周二', value: 2 },
@@ -117,6 +118,7 @@ export default function HostResourceMonitorPanel({ hosts }: { hosts: Host[] }) {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingRule, setEditingRule] = useState<HostResourceMonitorRule>()
   const [selectedRule, setSelectedRule] = useState<HostResourceMonitorRule>()
+  const [statusFilter, setStatusFilter] = useState<RuleStatusFilter>('all')
   const [form] = Form.useForm<RuleFormValues>()
   const hostScope = Form.useWatch('hostScope', form) ?? 'all'
 
@@ -142,9 +144,15 @@ export default function HostResourceMonitorPanel({ hosts }: { hosts: Host[] }) {
   const stats = useMemo(() => ({
     total: rules.length,
     enabled: rules.filter((rule) => rule.enabled).length,
+    disabled: rules.filter((rule) => !rule.enabled).length,
     triggered: alerts.length,
-    urgent: rules.filter((rule) => ['紧急', '严重'].includes(rule.alertLevel)).length,
   }), [alerts.length, rules])
+
+  const filteredRules = useMemo(() => rules.filter((rule) => {
+    if (statusFilter === 'enabled') return rule.enabled
+    if (statusFilter === 'disabled') return !rule.enabled
+    return true
+  }), [rules, statusFilter])
 
   const formatRuleHostScope = (rule: HostResourceMonitorRule, detail = false) => {
     const scope = rule.hostScope ?? (rule.hostId ? 'single' : 'all')
@@ -213,13 +221,18 @@ export default function HostResourceMonitorPanel({ hosts }: { hosts: Host[] }) {
 
   const columns: ColumnsType<HostResourceMonitorRule> = [
     {
+      title: '状态',
+      dataIndex: 'enabled',
+      width: 90,
+      render: (enabled: boolean) => <Tag className="monitor-rule-status-tag" color={enabled ? 'green' : 'default'}>{enabled ? '启用' : '停用'}</Tag>,
+    },
+    {
       title: '规则',
       dataIndex: 'name',
       render: (_, rule) => (
         <Space direction="vertical" size={2}>
           <Space wrap>
             <Typography.Text strong>{rule.name}</Typography.Text>
-            <Tag color={rule.enabled ? 'green' : 'default'}>{rule.enabled ? '启用' : '停用'}</Tag>
             <Tag color={alertLevelColor[rule.alertLevel]}>{rule.alertLevel}</Tag>
           </Space>
           <Typography.Text type="secondary">{rule.description || '按 CPU、内存、磁盘使用率阈值触发告警'}</Typography.Text>
@@ -251,14 +264,14 @@ export default function HostResourceMonitorPanel({ hosts }: { hosts: Host[] }) {
       <Row gutter={[16, 16]}>
         <Col xs={24} md={6}><Card><Statistic title="资源规则总数" value={stats.total} prefix={<BellOutlined />} /></Card></Col>
         <Col xs={24} md={6}><Card><Statistic title="启用规则" value={stats.enabled} valueStyle={{ color: '#52c41a' }} /></Card></Col>
+        <Col xs={24} md={6}><Card><Statistic title="停用规则" value={stats.disabled} valueStyle={{ color: stats.disabled ? '#8c8c8c' : undefined }} /></Card></Col>
         <Col xs={24} md={6}><Card><Statistic title="触发记录" value={stats.triggered} valueStyle={{ color: stats.triggered ? '#faad14' : undefined }} /></Card></Col>
-        <Col xs={24} md={6}><Card><Statistic title="高优先级" value={stats.urgent} valueStyle={{ color: stats.urgent ? '#ff4d4f' : undefined }} /></Card></Col>
       </Row>
 
       <Alert showIcon type="info" message="主机资源阈值监控" description="对已纳管主机的 CPU、内存、磁盘使用率设置阈值；任一选中指标达到阈值时触发告警，命中冷却期时不会重复刷屏。" />
 
-      <Card title="主机资源监控规则" extra={<Space><Button icon={<ReloadOutlined />} onClick={load}>刷新</Button><PermissionGate permission={PERMISSIONS.LOGS_MANAGE}><Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建资源监控</Button></PermissionGate></Space>}>
-        <Table rowKey="id" loading={loading} columns={columns} dataSource={rules} pagination={{ pageSize: 8 }} />
+      <Card title="主机资源监控规则" extra={<Space><Radio.Group size="small" optionType="button" buttonStyle="solid" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} options={[{ label: `全部 ${stats.total}`, value: 'all' }, { label: `启用 ${stats.enabled}`, value: 'enabled' }, { label: `停用 ${stats.disabled}`, value: 'disabled' }]} /><Button icon={<ReloadOutlined />} onClick={load}>刷新</Button><PermissionGate permission={PERMISSIONS.LOGS_MANAGE}><Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建资源监控</Button></PermissionGate></Space>}>
+        <Table rowKey="id" loading={loading} columns={columns} dataSource={filteredRules} pagination={{ pageSize: 8 }} rowClassName={(rule) => rule.enabled ? '' : 'monitor-rule-disabled-row'} />
       </Card>
 
       <Card title="最近资源监控触发记录">

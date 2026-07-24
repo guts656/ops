@@ -30,6 +30,7 @@ const sourceOptions = [
   { label: 'Docker 容器', value: 'docker' },
   { label: '任意文件日志', value: 'file' },
 ]
+type RuleStatusFilter = 'all' | 'enabled' | 'disabled'
 
 interface RuleFormValues extends Omit<LogMonitorRuleInput, 'keywords' | 'holidays' | 'notification'> {
   keywordsText: string
@@ -89,7 +90,7 @@ function toPayload(values: RuleFormValues): LogMonitorRuleInput {
     holidayMode: values.holidayMode,
     holidays: splitLines(values.holidaysText),
     notification,
-    selfHealingBinding: values.selfHealingBinding ? { ...values.selfHealingBinding, targetServiceName: values.selfHealingBinding.targetServiceName || values.selfHealingBinding.serviceName || '', serviceName: values.selfHealingBinding.targetServiceName || values.selfHealingBinding.serviceName || '', executionMode: values.selfHealingBinding.autoExecute ? 'controlled' : 'safe' } : undefined,
+    selfHealingBinding: values.selfHealingBinding ? { ...values.selfHealingBinding, targetServiceName: values.selfHealingBinding.targetServiceName || values.selfHealingBinding.serviceName || '', serviceName: values.selfHealingBinding.targetServiceName || values.selfHealingBinding.serviceName || '', executionMode: values.selfHealingBinding.autoExecute ? 'controlled' as const : 'safe' as const } : undefined,
   })
 }
 
@@ -147,6 +148,7 @@ export default function LogMonitoring() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingRule, setEditingRule] = useState<LogMonitorRule>()
   const [selectedRule, setSelectedRule] = useState<LogMonitorRule>()
+  const [statusFilter, setStatusFilter] = useState<RuleStatusFilter>('all')
   const [form] = Form.useForm<RuleFormValues>()
   const hostScope = Form.useWatch('hostScope', form) ?? 'all'
 
@@ -170,9 +172,15 @@ export default function LogMonitoring() {
   const stats = useMemo(() => ({
     total: rules.length,
     enabled: rules.filter((rule) => rule.enabled).length,
+    disabled: rules.filter((rule) => !rule.enabled).length,
     triggered: alerts.length,
-    urgent: rules.filter((rule) => ['紧急', '严重'].includes(rule.alertLevel)).length,
   }), [alerts.length, rules])
+
+  const filteredRules = useMemo(() => rules.filter((rule) => {
+    if (statusFilter === 'enabled') return rule.enabled
+    if (statusFilter === 'disabled') return !rule.enabled
+    return true
+  }), [rules, statusFilter])
 
   const hostOptions = hosts.map((host) => ({ label: `${host.ip} · ${host.hostname}`, value: host.id }))
   const groupOptions = Array.from(new Set(hosts.map((host) => host.group).filter(Boolean))).map((group) => ({ label: group, value: group }))
@@ -257,13 +265,18 @@ export default function LogMonitoring() {
 
   const columns: ColumnsType<LogMonitorRule> = [
     {
+      title: '状态',
+      dataIndex: 'enabled',
+      width: 90,
+      render: (enabled: boolean) => <Tag className="monitor-rule-status-tag" color={enabled ? 'green' : 'default'}>{enabled ? '启用' : '停用'}</Tag>,
+    },
+    {
       title: '规则',
       dataIndex: 'name',
       render: (_, rule) => (
         <Space direction="vertical" size={2}>
           <Space wrap>
             <Typography.Text strong>{rule.name}</Typography.Text>
-            <Tag color={rule.enabled ? 'green' : 'default'}>{rule.enabled ? '启用' : '停用'}</Tag>
             <Tag color={alertLevelColor[rule.alertLevel]}>{rule.alertLevel}</Tag>
             {selfHealingTag(rule)}
           </Space>
@@ -318,8 +331,8 @@ export default function LogMonitoring() {
       <Row gutter={[16, 16]}>
         <Col xs={24} md={6}><Card><Statistic title="规则总数" value={stats.total} prefix={<BellOutlined />} /></Card></Col>
         <Col xs={24} md={6}><Card><Statistic title="启用规则" value={stats.enabled} valueStyle={{ color: '#52c41a' }} /></Card></Col>
+        <Col xs={24} md={6}><Card><Statistic title="停用规则" value={stats.disabled} valueStyle={{ color: stats.disabled ? '#8c8c8c' : undefined }} /></Card></Col>
         <Col xs={24} md={6}><Card><Statistic title="触发记录" value={stats.triggered} valueStyle={{ color: stats.triggered ? '#faad14' : undefined }} /></Card></Col>
-        <Col xs={24} md={6}><Card><Statistic title="高优先级" value={stats.urgent} valueStyle={{ color: stats.urgent ? '#ff4d4f' : undefined }} /></Card></Col>
       </Row>
 
       <Tabs
@@ -330,8 +343,8 @@ export default function LogMonitoring() {
             children: (
               <Space direction="vertical" size="large" style={{ width: '100%' }}>
                 <Alert showIcon type="info" message="触发逻辑" description="调度器默认每 30 秒评估一次启用规则。规则命中时会检查冷却期，避免同一条件短时间重复刷屏；系统内置“所有 ERROR 日志告警”规则，会将 ERROR 级别日志写入报警中心。" />
-                <Card title="监控规则" extra={<Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>}>
-                  <Table rowKey="id" loading={loading} columns={columns} dataSource={rules} pagination={{ pageSize: 8 }} />
+                <Card title="监控规则" extra={<Space><Radio.Group size="small" optionType="button" buttonStyle="solid" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} options={[{ label: `全部 ${stats.total}`, value: 'all' }, { label: `启用 ${stats.enabled}`, value: 'enabled' }, { label: `停用 ${stats.disabled}`, value: 'disabled' }]} /><Button icon={<ReloadOutlined />} onClick={load}>刷新</Button></Space>}>
+                  <Table rowKey="id" loading={loading} columns={columns} dataSource={filteredRules} pagination={{ pageSize: 8 }} rowClassName={(rule) => rule.enabled ? '' : 'monitor-rule-disabled-row'} />
                 </Card>
                 <Card title="最近触发记录">
                   <Table

@@ -12,6 +12,11 @@ interface Props {
   onSubmit: (values: HostConnectionValues) => Promise<void>
 }
 
+function defaultAgentApiBaseUrl() {
+  if (window.location.port === '5173') return `${window.location.protocol}//${window.location.hostname}:3001`
+  return window.location.origin
+}
+
 export default function AgentCredentialModal({ open, title, host, loading = false, showApiBaseUrl = false, onCancel, onSubmit }: Props) {
   const [form] = Form.useForm<HostConnectionValues>()
   const [authType, setAuthType] = useState('密码')
@@ -21,7 +26,7 @@ export default function AgentCredentialModal({ open, title, host, loading = fals
     if (!open || !host) return
     const nextAuthType = isWindows ? '密码' : '密码'
     setAuthType(nextAuthType)
-    const defaultApiBaseUrl = `${window.location.protocol}//${window.location.hostname}:3001`
+    const defaultApiBaseUrl = defaultAgentApiBaseUrl()
     form.setFieldsValue({ sshUsername: host.owner, sshPort: host.sshPort || (isWindows ? 5985 : 22), authType: nextAuthType, apiBaseUrl: defaultApiBaseUrl })
   }, [form, host, isWindows, open])
 
@@ -46,8 +51,8 @@ export default function AgentCredentialModal({ open, title, host, loading = fals
           </Radio.Group>
         </Form.Item>
         {showApiBaseUrl ? (
-          <Form.Item name="apiBaseUrl" label="Agent 回连 API 地址" rules={[{ required: true, message: '请输入 Agent 回连 API 地址' }, { type: 'url', message: '请输入完整 URL，例如 http://10.126.92.235:3001' }]}>
-            <Input placeholder="例如 http://10.126.92.235:3001" />
+          <Form.Item name="apiBaseUrl" label="Agent 回连 API 地址" rules={[{ required: true, message: '请输入 Agent 回连 API 地址' }, { type: 'url', message: '请输入完整 URL，例如 http://172.29.25.200:18080' }]}>
+            <Input placeholder="例如 http://172.29.25.200:18080" />
           </Form.Item>
         ) : null}
         {authType === '密码' ? (

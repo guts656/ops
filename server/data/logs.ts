@@ -39,8 +39,26 @@ function traceId(hostId: string, index: number, value?: string) {
   return value?.trim() || `agent-${hostId.slice(-8)}-${Date.now().toString(36)}-${index}`
 }
 
+function dbSafeText(value: string) {
+  return value.replace(new RegExp(String.fromCharCode(0), 'g'), '')
+}
+
+function compactText(value: string, maxLength: number) {
+  const text = dbSafeText(value)
+  return text.length > maxLength ? text.slice(0, maxLength) : text
+}
+
 function compactMessage(message: string) {
-  return message.length > 2000 ? message.slice(0, 2000) : message
+  return compactText(message, 2000)
+}
+
+function sanitizeJsonValue(value: unknown): unknown {
+  if (typeof value === 'string') return dbSafeText(value)
+  if (Array.isArray(value)) return value.map(sanitizeJsonValue)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [dbSafeText(key), sanitizeJsonValue(item)]))
+  }
+  return value
 }
 
 function pageValue(value: number | undefined, fallback: number, max: number) {
@@ -154,14 +172,14 @@ export async function ingestAgentLogs(hostId: string, logs: AgentLogInput[]) {
       id: logId(hostId, index),
       time: timeText(timestamp),
       timestamp,
-      service: log.service,
+      service: compactText(log.service, 200),
       level: log.level,
-      traceId: traceId(hostId, index, log.traceId),
+      traceId: compactText(traceId(hostId, index, log.traceId), 200),
       message: compactMessage(log.message),
       hostId,
-      source: log.source ?? 'agent',
-      labels: log.labels as Prisma.InputJsonValue | undefined,
-      rawPayload: log.rawPayload as Prisma.InputJsonValue | undefined,
+      source: log.source ? compactText(log.source, 500) : 'agent',
+      labels: sanitizeJsonValue(log.labels) as Prisma.InputJsonValue | undefined,
+      rawPayload: sanitizeJsonValue(log.rawPayload) as Prisma.InputJsonValue | undefined,
     }
   })
   const retainedRows = rows.filter((row) => !Number.isNaN(row.timestamp.getTime()) && row.timestamp >= cutoff && row.timestamp <= latestAllowed)

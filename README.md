@@ -128,13 +128,19 @@ chmod +x scripts/install-fresh.sh
 
 ## Agent 回连地址说明
 
-新增主机安装 Agent 时，后端会优先使用平台服务器的非内部网卡 IPv4 地址加 `PORT` 生成回连地址，例如：
+新增主机安装 Agent 时，后端会优先使用 `OPS_AGENT_PUBLIC_URL`；未配置时才使用平台服务器的非内部网卡 IPv4 地址加 `PORT` 生成回连地址，例如：
 
 ```text
 http://<server-ip>:3001
 ```
 
-`OPS_AGENT_PUBLIC_URL` 仅用于自动识别地址不可达、或必须走反向代理/公网地址时的备用配置。不要在代码中硬编码旧的候选 IP。
+如果被纳管主机无法直连 API 端口，或必须走 Nginx/反向代理，请配置：
+
+```text
+OPS_AGENT_PUBLIC_URL=http://<server-ip>:18080
+```
+
+不要在代码中硬编码旧的候选 IP。
 
 ## GitHub 上传前安全清单
 

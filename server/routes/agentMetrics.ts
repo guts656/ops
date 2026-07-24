@@ -24,11 +24,11 @@ const logLevelSchema = z.enum(['ERROR', 'WARN', 'INFO', 'DEBUG'])
 const logsSchema = z.object({
   logs: z.array(z.object({
     timestamp: z.string().datetime().optional(),
-    service: z.string().min(1),
-    level: logLevelSchema,
-    traceId: z.string().optional(),
-    message: z.string().min(1),
-    source: z.string().optional(),
+    service: z.coerce.string().min(1),
+    level: z.preprocess((value) => typeof value === 'string' ? value.toUpperCase() : value, logLevelSchema),
+    traceId: z.coerce.string().optional(),
+    message: z.coerce.string().min(1),
+    source: z.coerce.string().optional(),
     labels: z.unknown().optional(),
     rawPayload: z.unknown().optional(),
   })).min(1).max(100),

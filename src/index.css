@@ -190,6 +190,25 @@ body {
   background: #1d2945 !important;
 }
 
+.monitor-rule-status-tag {
+  min-width: 52px;
+  text-align: center;
+  margin-inline-end: 0;
+}
+
+.ant-table-tbody > tr.monitor-rule-disabled-row > td {
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.ant-table-tbody > tr.monitor-rule-disabled-row:hover > td {
+  background: rgba(148, 163, 184, 0.14) !important;
+}
+
+.monitor-rule-disabled-row .ant-typography,
+.monitor-rule-disabled-row .ant-tag {
+  opacity: 0.82;
+}
+
 .chat-card .ant-card-body {
   display: flex;
   flex-direction: column;

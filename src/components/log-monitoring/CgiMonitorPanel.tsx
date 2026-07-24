@@ -1,5 +1,5 @@
 import { ClockCircleOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Checkbox, Col, Descriptions, Drawer, Flex, Form, Input, InputNumber, Popconfirm, Row, Select, Space, Statistic, Switch, Table, Tag, Typography, message } from 'antd'
+import { Alert, Button, Card, Checkbox, Col, Descriptions, Drawer, Flex, Form, Input, InputNumber, Popconfirm, Radio, Row, Select, Space, Statistic, Switch, Table, Tag, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useMemo, useState } from 'react'
 import { createCgiMonitorRule, deleteCgiMonitorRule, evaluateCgiMonitorRule, listCgiMonitorAlerts, listCgiMonitorRules, updateCgiMonitorRule } from '../../api/cgiMonitors'
@@ -11,6 +11,7 @@ import type { Host } from '../../types/host'
 import SelfHealingBindingCard from './SelfHealingBindingCard'
 
 const alertLevelColor: Record<string, string> = { 紧急: 'red', 严重: 'volcano', 警告: 'gold', 提示: 'blue' }
+type RuleStatusFilter = 'all' | 'enabled' | 'disabled'
 const dayOptions = [
   { label: '周一', value: 1 },
   { label: '周二', value: 2 },
@@ -124,6 +125,7 @@ export default function CgiMonitorPanel({ hosts }: { hosts: Host[] }) {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingRule, setEditingRule] = useState<CgiMonitorRule>()
   const [selectedRule, setSelectedRule] = useState<CgiMonitorRule>()
+  const [statusFilter, setStatusFilter] = useState<RuleStatusFilter>('all')
   const [form] = Form.useForm<RuleFormValues>()
   const hostOptions = hosts.map((host) => ({
     label: `${host.ip} · ${host.hostname}`,
@@ -149,9 +151,15 @@ export default function CgiMonitorPanel({ hosts }: { hosts: Host[] }) {
   const stats = useMemo(() => ({
     total: rules.length,
     enabled: rules.filter((rule) => rule.enabled).length,
+    disabled: rules.filter((rule) => !rule.enabled).length,
     unhealthy: rules.filter((rule) => rule.consecutiveFailures > 0).length,
-    triggered: alerts.length,
-  }), [alerts.length, rules])
+  }), [rules])
+
+  const filteredRules = useMemo(() => rules.filter((rule) => {
+    if (statusFilter === 'enabled') return rule.enabled
+    if (statusFilter === 'disabled') return !rule.enabled
+    return true
+  }), [rules, statusFilter])
 
   const openCreate = () => {
     setEditingRule(undefined)
@@ -206,13 +214,18 @@ export default function CgiMonitorPanel({ hosts }: { hosts: Host[] }) {
 
   const columns: ColumnsType<CgiMonitorRule> = [
     {
+      title: '状态',
+      dataIndex: 'enabled',
+      width: 90,
+      render: (enabled: boolean) => <Tag className="monitor-rule-status-tag" color={enabled ? 'green' : 'default'}>{enabled ? '启用' : '停用'}</Tag>,
+    },
+    {
       title: '规则',
       dataIndex: 'name',
       render: (_, rule) => (
         <Space direction="vertical" size={2}>
           <Space wrap>
             <Typography.Text strong>{rule.name}</Typography.Text>
-            <Tag color={rule.enabled ? 'green' : 'default'}>{rule.enabled ? '启用' : '停用'}</Tag>
             <Tag color={alertLevelColor[rule.alertLevel]}>{rule.alertLevel}</Tag>
             {selfHealingTag(rule)}
           </Space>
@@ -244,14 +257,14 @@ export default function CgiMonitorPanel({ hosts }: { hosts: Host[] }) {
       <Row gutter={[16, 16]}>
         <Col xs={24} md={6}><Card><Statistic title="URL规则总数" value={stats.total} /></Card></Col>
         <Col xs={24} md={6}><Card><Statistic title="启用规则" value={stats.enabled} valueStyle={{ color: '#52c41a' }} /></Card></Col>
+        <Col xs={24} md={6}><Card><Statistic title="停用规则" value={stats.disabled} valueStyle={{ color: stats.disabled ? '#8c8c8c' : undefined }} /></Card></Col>
         <Col xs={24} md={6}><Card><Statistic title="当前异常" value={stats.unhealthy} valueStyle={{ color: stats.unhealthy ? '#ff4d4f' : undefined }} /></Card></Col>
-        <Col xs={24} md={6}><Card><Statistic title="触发记录" value={stats.triggered} valueStyle={{ color: stats.triggered ? '#faad14' : undefined }} /></Card></Col>
       </Row>
 
       <Alert showIcon type="info" message="CGI/URL 内容监控" description="可由平台服务端或指定已纳管主机定时请求 URL，按响应内容关键字和状态码判断是否异常。例如选择 172.29.20.171 探测 http://192.168.1.1，设置“必须包含 400”，当响应未包含 400 时触发告警。" />
 
-      <Card title="CGI/URL 监控规则" extra={<Space><Button icon={<ReloadOutlined />} onClick={load}>刷新</Button><PermissionGate permission={PERMISSIONS.LOGS_MANAGE}><Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建URL监控</Button></PermissionGate></Space>}>
-        <Table rowKey="id" loading={loading} columns={columns} dataSource={rules} pagination={{ pageSize: 8 }} />
+      <Card title="CGI/URL 监控规则" extra={<Space><Radio.Group size="small" optionType="button" buttonStyle="solid" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} options={[{ label: `全部 ${stats.total}`, value: 'all' }, { label: `启用 ${stats.enabled}`, value: 'enabled' }, { label: `停用 ${stats.disabled}`, value: 'disabled' }]} /><Button icon={<ReloadOutlined />} onClick={load}>刷新</Button><PermissionGate permission={PERMISSIONS.LOGS_MANAGE}><Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建URL监控</Button></PermissionGate></Space>}>
+        <Table rowKey="id" loading={loading} columns={columns} dataSource={filteredRules} pagination={{ pageSize: 8 }} rowClassName={(rule) => rule.enabled ? '' : 'monitor-rule-disabled-row'} />
       </Card>
 
       <Card title="最近URL监控触发记录">

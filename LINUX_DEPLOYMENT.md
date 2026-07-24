@@ -103,16 +103,16 @@ CREDENTIAL_ENCRYPTION_KEY=<replace-with-at-least-32-random-characters>
 
 ### Agent 回连地址
 
-新增主机安装 Agent 时，后端默认优先使用平台服务器的非内部网卡 IPv4 加 `PORT`，例如：
+新增主机安装 Agent 时，后端默认优先使用 `OPS_AGENT_PUBLIC_URL`。如果未配置，才会使用平台服务器的非内部网卡 IPv4 加 `PORT`，例如：
 
 ```text
 http://172.29.25.200:3001
 ```
 
-`OPS_AGENT_PUBLIC_URL` 是可选备用配置。只有当 Agent 必须通过反向代理、公网地址或自动识别的网卡地址不可达时才设置，例如：
+当前测试环境外部入口走 Nginx `18080`，而 `3001` 不一定对被纳管主机开放，因此建议显式配置：
 
 ```env
-OPS_AGENT_PUBLIC_URL=http://172.29.25.200:3001
+OPS_AGENT_PUBLIC_URL=http://172.29.25.200:18080
 ```
 
 不要在代码中重新加入旧的硬编码候选 IP。
@@ -190,7 +190,7 @@ http://172.29.25.200:18080/
 - Socket.IO 实时通知无 400/502。
 - 批量任务文件目录可写。
 - API 日志无生产密钥缺失错误。
-- 新增主机 Agent 回连地址使用平台服务器网卡 IP。
+- 新增/重装主机 Agent 回连地址使用 `OPS_AGENT_PUBLIC_URL`，测试环境应为 `http://172.29.25.200:18080`。
 
 ## 回滚
 
