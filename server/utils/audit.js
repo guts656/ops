@@ -1,3 +1,15 @@
+const shanghaiFormatter = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, hourCycle: 'h23' });
+function shanghaiParts(date) {
+    return Object.fromEntries(shanghaiFormatter.formatToParts(date).map((part) => [part.type, part.value]));
+}
+function shanghaiTime(date) {
+    const parts = shanghaiParts(date);
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+function shanghaiDate(date) {
+    const parts = shanghaiParts(date);
+    return `${parts.year}-${parts.month}-${parts.day}`;
+}
 function simpleHash(input) {
     let hash = 0;
     for (let index = 0; index < input.length; index += 1) {
@@ -18,12 +30,12 @@ export function createHostAudit(operator, action, target, result = '成功', det
     retention.setFullYear(retention.getFullYear() + 7);
     return {
         id: `HAUD-${Date.now()}`,
-        time: new Date().toLocaleString(),
+        time: shanghaiTime(new Date()),
         operator,
         action,
         target,
         result,
         detail,
-        retentionUntil: retention.toISOString().slice(0, 10),
+        retentionUntil: shanghaiDate(retention),
     };
 }

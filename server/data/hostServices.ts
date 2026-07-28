@@ -9,11 +9,54 @@ import { shanghaiTime } from '../utils/time'
 type HostServiceRow = NonNullable<Awaited<ReturnType<typeof prisma.hostService.findFirst>>>
 type ServiceEventRow = NonNullable<Awaited<ReturnType<typeof prisma.serviceEvent.findFirst>>>
 type HostSummary = { id: string; ip: string; hostname: string; owner: string }
+type WindowsServiceCandidate = { name: string; source?: string | null; metadata?: unknown }
 
 const healthyStatuses = new Set(['running', 'active'])
 const stoppedBaselineStatuses = new Set(['stopped', 'inactive', 'not_running', 'exited'])
 const severeStatuses = new Set(['failed', 'error', 'dead', 'missing', 'removed', '异常'])
 const abnormalStatuses = new Set([...severeStatuses, ...stoppedBaselineStatuses, 'unknown'])
+const windowsSystemServiceNames = new Set([
+  'appinfo',
+  'appmgmt',
+  'bits',
+  'brokerinfrastructure',
+  'cryptsvc',
+  'defragsvc',
+  'dhcp',
+  'dnscache',
+  'eventlog',
+  'eventsystem',
+  'gpsvc',
+  'iphlpsvc',
+  'lanmanserver',
+  'lanmanworkstation',
+  'lmhosts',
+  'mpssvc',
+  'netlogon',
+  'nlasvc',
+  'plugplay',
+  'policyagent',
+  'power',
+  'profsvc',
+  'rpcss',
+  'samss',
+  'schedule',
+  'seclogon',
+  'sens',
+  'spooler',
+  'sppsvc',
+  'themes',
+  'trustedinstaller',
+  'w32time',
+  'w3logsvc',
+  'was',
+  'wercplsupport',
+  'wercsvc',
+  'winmgmt',
+  'winrm',
+  'wuauserv',
+])
+const windowsSystemServicePrefixes = ['clr_', 'clr_optimization_', 'comsysapp', 'diagnostic', 'microsoft', 'msiserver', 'net.', 'perceptionsimulation', 'remoteaccess', 'sgrm', 'shell', 'swprv', 'tiledatamodelsvc', 'vmic', 'wdi', 'wer', 'winhttp', 'wlidsvc', 'wpn', 'xbl']
 
 function displayTime(date: Date) {
   return shanghaiTime(date)
@@ -85,7 +128,7 @@ function toServiceEvent(row: ServiceEventRow): ServiceEventItem {
 export async function getHostServices(hostId: string) {
   if (await isLinuxHost(hostId)) return []
   const services = await prisma.hostService.findMany({ where: { hostId, NOT: { metadata: { path: ['hiddenStoppedBaseline'], equals: true } } }, orderBy: [{ status: 'asc' }, { name: 'asc' }] })
-  return services.map(toHostService)
+  return services.filter((service) => !isIgnoredService(service) && !isWindowsSystemService(service)).map(toHostService)
 }
 
 export async function getHostServiceEvents(hostId: string, limit = 50) {
@@ -103,10 +146,19 @@ async function isLinuxHost(hostId: string) {
   return isLinuxOs(host?.os)
 }
 
-function isWindowsSystemService(service: AgentServiceInput) {
+function isWindowsSystemServiceName(name: string) {
+  const normalized = name.trim().toLowerCase()
+  return windowsSystemServiceNames.has(normalized) || windowsSystemServicePrefixes.some((prefix) => normalized.startsWith(prefix))
+}
+
+function isWindowsSystemService(service: WindowsServiceCandidate) {
   if (service.source !== 'windows-service') return false
-  const path = String((service.metadata as { path?: unknown } | undefined)?.path ?? '').toLowerCase().replaceAll('/', '\\')
-  return !path || path === 'c:\\window' || path.startsWith('c:\\windows') || path.includes('\\windows\\') || path.startsWith('\\systemroot\\') || path.startsWith('%systemroot%\\') || path.startsWith('c:\\program files\\windows defender\\') || path.startsWith('c:\\program files (x86)\\windows defender\\')
+  const name = service.name.trim().toLowerCase()
+  const metadata = metadataObject(service.metadata)
+  const path = String(metadata.path ?? '').toLowerCase().replaceAll('/', '\\')
+  const systemName = isWindowsSystemServiceName(name)
+  if (metadata.systemService === true) return true
+  return systemName || !path || path === 'c:\\window' || path.startsWith('c:\\windows') || path.includes('\\windows\\') || path.startsWith('\\systemroot\\') || path.startsWith('%systemroot%\\') || path.startsWith('c:\\program files\\windows defender\\') || path.startsWith('c:\\program files (x86)\\windows defender\\') || path.startsWith('c:\\program files\\windows nt\\')
 }
 
 function metadataObject(value: unknown) {
@@ -115,6 +167,10 @@ function metadataObject(value: unknown) {
 
 function isHiddenStoppedBaseline(service: Pick<HostServiceRow, 'metadata'>) {
   return metadataObject(service.metadata).hiddenStoppedBaseline === true
+}
+
+function isIgnoredService(service: Pick<HostServiceRow, 'metadata'>) {
+  return metadataObject(service.metadata).ignored === true
 }
 
 function hasEverBeenHealthy(service: Pick<HostServiceRow, 'metadata' | 'status'>) {
@@ -254,6 +310,13 @@ export async function ingestHostServices(hostId: string, services: AgentServiceI
     const key = serviceKey({ name: service.name, port })
     reportedKeys.add(key)
     const previous = existingByKey.get(key)
+    if (previous && isIgnoredService(previous)) {
+      await prisma.hostService.update({
+        where: { id: previous.id },
+        data: { lastReportedAt: service.lastReportedAt ? new Date(service.lastReportedAt) : now },
+      })
+      continue
+    }
     const previousMetadata = metadataObject(previous?.metadata)
     const previousHiddenBaseline = previous ? isHiddenStoppedBaseline(previous) : false
     const everHealthy = Boolean(previousMetadata.everHealthy) || isHealthyStatus(previous?.status) || isHealthyStatus(service.status)
@@ -302,7 +365,7 @@ export async function ingestHostServices(hostId: string, services: AgentServiceI
   for (const service of existing) {
     const key = serviceKey(service)
     const status = normalizedStatus(service.status)
-    if (reportedKeys.has(key) || isHiddenStoppedBaseline(service) || status === 'missing' || status === 'removed') continue
+    if (reportedKeys.has(key) || isHiddenStoppedBaseline(service) || isIgnoredService(service) || isWindowsSystemService(service) || status === 'missing' || status === 'removed') continue
     const saved = await prisma.hostService.update({ where: { id: service.id }, data: { status: 'missing', pid: null, lastReportedAt: now, metadata: { previousMetadata: service.metadata, missingDetectedAt: now.toISOString() } as Prisma.InputJsonValue } })
     await createTransitionEvent(host, saved, service.status, 'missing', { source: service.source, message: `${service.name} was not included in the latest agent service report`, payload: { reason: 'absent_from_latest_report' } })
   }
@@ -352,6 +415,7 @@ export async function ingestServiceEvents(hostId: string, events: AgentServiceEv
     return 0
   }
   for (const event of events) {
+    if (event.source === 'windows-service' && isWindowsSystemServiceName(event.service)) continue
     const occurredAt = event.occurredAt ? new Date(event.occurredAt) : new Date()
     const savedEvent = await prisma.serviceEvent.create({
       data: {
@@ -367,6 +431,7 @@ export async function ingestServiceEvents(hostId: string, events: AgentServiceEv
     })
     const currentStatus = eventStatus(event)
     const service = await prisma.hostService.findFirst({ where: { hostId, name: event.service }, orderBy: { lastReportedAt: 'desc' } })
+    if (service && (isIgnoredService(service) || isWindowsSystemService(service))) continue
     if (isHealthyStatus(currentStatus)) {
       if (service) {
         const savedService = await prisma.hostService.update({

@@ -1,6 +1,7 @@
 import type { Prisma } from '../../src/generated/prisma/client'
 import { prisma } from '../db/prisma'
 import type { SelfHealingExecution, SelfHealingRule, SelfHealingRuleValues } from '../../src/types/selfHealing'
+import { shanghaiTime } from '../utils/time'
 
 function buildRuleConditionText(rule: Pick<SelfHealingRule, 'conditions' | 'logic'>) {
   return rule.conditions
@@ -9,7 +10,7 @@ function buildRuleConditionText(rule: Pick<SelfHealingRule, 'conditions' | 'logi
 }
 
 function nowText() {
-  return new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
+  return shanghaiTime(new Date())
 }
 
 function maxCooldownMinutes(rule: Pick<SelfHealingRule, 'actions'>) {

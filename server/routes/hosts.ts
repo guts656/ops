@@ -3,11 +3,13 @@ import { z } from 'zod'
 import { PERMISSIONS } from '../config/permissions.ts'
 import { getHostContainers } from '../data/hostContainers.ts'
 import { deleteLogCollectionRule, getLogCollectionRules, saveLogCollectionRule } from '../data/logCollectionRules.ts'
-import { addHosts, deleteHost, deleteHostServiceRecord, diagnoseAgentBackend, disableHostPullCredential, getHost, getHostAgentJobs, getHostAuditLogs, getHostOptions, getHostResourceTrend, pullHostMetrics, queryHosts, refreshHostInfo, remanageHost, reinstallAgent, repairAgentBackendRoutes, restartAgent, saveHostPullCredential, setHostMaintenance, startHostService, stopHostService, testHostConnection, updateHost } from '../data/hosts.ts'
+import { getHostLogCollectionStatus } from '../data/logCollectionStatus.ts'
+import { addHosts, createWindowsOfflineAgentPackage, deleteHost, deleteHostServiceRecord, diagnoseAgentBackend, disableHostPullCredential, getHost, getHostAgentJobs, getHostAuditLogs, getHostOptions, getHostResourceTrend, ignoreHostServiceRecord, pullHostMetrics, queryHosts, queueAgentUpdateJobs, refreshHostInfo, remanageHost, reinstallAgent, repairAgentBackendRoutes, restartAgent, restartHostService, saveHostPullCredential, setHostMaintenance, startHostService, stopHostService, testHostConnection, updateHost } from '../data/hosts.ts'
 import { getHostServiceEvents, getHostServices } from '../data/hostServices.ts'
 import { authenticate } from '../middleware/authenticate.ts'
 import { requirePermission } from '../middleware/requirePermission.ts'
 import type { AuthRequest } from '../types/auth'
+import { getLinuxSshKeyInfo } from '../utils/linuxSshKey.ts'
 
 function paramId(value: string | string[]) {
   return Array.isArray(value) ? value[0] : value
@@ -27,11 +29,12 @@ const addHostSchema = z.object({
   hostname: z.string().optional(),
   os: z.enum(['Linux', 'Windows']).optional(),
   osVersion: z.string().optional(),
-  sshUsername: z.string().min(1),
-  authType: z.enum(['密码', '密钥']),
+  installMode: z.enum(['remote', 'offline']).optional(),
+  sshUsername: z.string().optional(),
+  authType: z.enum(['密码', '密钥']).optional(),
   password: z.string().optional(),
   privateKey: z.string().optional(),
-  sshPort: z.coerce.number().min(1).max(65535),
+  sshPort: z.coerce.number().min(1).max(65535).optional(),
   group: z.string().min(1),
   marketType: hostMarketTypeSchema.optional(),
   tags: z.array(z.string()).optional(),
@@ -55,8 +58,17 @@ const agentCredentialsSchema = z.object({
   privateKey: z.string().optional(),
   sshPort: z.coerce.number().min(1).max(65535),
 })
+const optionalAgentCredentialsSchema = agentCredentialsSchema.partial()
 const reinstallAgentSchema = agentCredentialsSchema.extend({
   apiBaseUrl: z.string().url().optional(),
+})
+const offlineAgentPackageSchema = z.object({
+  apiBaseUrl: z.string().url().optional(),
+}).optional()
+const agentUpdateJobsSchema = z.object({
+  hostIds: z.array(z.string().min(1)).optional(),
+  os: z.enum(['Linux', 'Windows']).optional(),
+  onlyOutdated: z.boolean().optional(),
 })
 const maintenanceSchema = z.object({
   enabled: z.boolean(),
@@ -124,6 +136,23 @@ router.delete('/log-collection-rules/:id', requirePermission(PERMISSIONS.HOSTS_M
   }
 })
 
+router.get('/linux-ssh-key', requirePermission(PERMISSIONS.HOSTS_MANAGE), async (_req, res, next) => {
+  try {
+    res.json({ data: await getLinuxSshKeyInfo() })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/agent-update-jobs', requirePermission(PERMISSIONS.HOSTS_AGENT), async (req: AuthRequest, res, next) => {
+  try {
+    const values = agentUpdateJobsSchema.parse(req.body ?? {})
+    res.json({ data: await queueAgentUpdateJobs(values, req.user!.displayName) })
+  } catch (error) {
+    next(error)
+  }
+})
+
 router.get('/:id/resource-trend', requirePermission(PERMISSIONS.HOSTS_VIEW), async (req, res, next) => {
   try {
     res.json({ data: await getHostResourceTrend(paramId(req.params.id)) })
@@ -164,9 +193,17 @@ router.get('/:id/service-events', requirePermission(PERMISSIONS.HOSTS_VIEW), asy
   }
 })
 
+router.get('/:id/log-collection-status', requirePermission(PERMISSIONS.HOSTS_VIEW), async (req, res, next) => {
+  try {
+    res.json({ data: await getHostLogCollectionStatus(paramId(req.params.id)) })
+  } catch (error) {
+    next(error)
+  }
+})
+
 router.post('/:id/services/:serviceId/start', requirePermission(PERMISSIONS.HOSTS_AGENT), async (req: AuthRequest, res, next) => {
   try {
-    const credentials = agentCredentialsSchema.parse(req.body)
+    const credentials = optionalAgentCredentialsSchema.parse(req.body ?? {})
     const updated = await startHostService(paramId(req.params.id), paramId(req.params.serviceId), credentials, req.user!.displayName)
     if (!updated) return res.status(404).json({ message: '主机不存在' })
     res.json({ data: updated })
@@ -177,8 +214,19 @@ router.post('/:id/services/:serviceId/start', requirePermission(PERMISSIONS.HOST
 
 router.post('/:id/services/:serviceId/stop', requirePermission(PERMISSIONS.HOSTS_AGENT), async (req: AuthRequest, res, next) => {
   try {
-    const credentials = agentCredentialsSchema.parse(req.body)
+    const credentials = optionalAgentCredentialsSchema.parse(req.body ?? {})
     const updated = await stopHostService(paramId(req.params.id), paramId(req.params.serviceId), credentials, req.user!.displayName)
+    if (!updated) return res.status(404).json({ message: '主机不存在' })
+    res.json({ data: updated })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/:id/services/:serviceId/restart', requirePermission(PERMISSIONS.HOSTS_AGENT), async (req: AuthRequest, res, next) => {
+  try {
+    const credentials = optionalAgentCredentialsSchema.parse(req.body ?? {})
+    const updated = await restartHostService(paramId(req.params.id), paramId(req.params.serviceId), credentials, req.user!.displayName)
     if (!updated) return res.status(404).json({ message: '主机不存在' })
     res.json({ data: updated })
   } catch (error) {
@@ -189,6 +237,16 @@ router.post('/:id/services/:serviceId/stop', requirePermission(PERMISSIONS.HOSTS
 router.delete('/:id/services/:serviceId', requirePermission(PERMISSIONS.HOSTS_AGENT), async (req: AuthRequest, res, next) => {
   try {
     const updated = await deleteHostServiceRecord(paramId(req.params.id), paramId(req.params.serviceId), req.user!.displayName)
+    if (!updated) return res.status(404).json({ message: '主机不存在' })
+    res.json({ data: updated })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/:id/services/:serviceId/ignore', requirePermission(PERMISSIONS.HOSTS_AGENT), async (req: AuthRequest, res, next) => {
+  try {
+    const updated = await ignoreHostServiceRecord(paramId(req.params.id), paramId(req.params.serviceId), req.user!.displayName)
     if (!updated) return res.status(404).json({ message: '主机不存在' })
     res.json({ data: updated })
   } catch (error) {
@@ -326,6 +384,19 @@ router.post('/:id/repair-agent-backend-routes', requirePermission(PERMISSIONS.HO
     const result = await repairAgentBackendRoutes(paramId(req.params.id), credentials, req.user!.displayName)
     if (!result) return res.status(404).json({ message: '主机不存在' })
     res.json({ data: result })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/:id/offline-agent-package', requirePermission(PERMISSIONS.HOSTS_AGENT), async (req: AuthRequest, res, next) => {
+  try {
+    const values = offlineAgentPackageSchema.parse(req.body)
+    const installer = await createWindowsOfflineAgentPackage(paramId(req.params.id), req.user!.displayName, values)
+    if (!installer) return res.status(404).json({ message: '主机不存在' })
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+    res.setHeader('Content-Disposition', `attachment; filename="${installer.filename}"`)
+    res.send(installer.content)
   } catch (error) {
     next(error)
   }

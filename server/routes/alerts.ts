@@ -27,6 +27,8 @@ const alertFiltersSchema = z.object({
   isSuppressed: boolish,
   startTime: z.string().optional(),
   endTime: z.string().optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional(),
 })
 
 const createAlertSchema = z.object({
@@ -59,7 +61,7 @@ router.use(authenticate)
 router.get('/', requirePermission(PERMISSIONS.ALERTS_VIEW), async (req, res, next) => {
   try {
     const filters = alertFiltersSchema.parse(req.query)
-    res.json({ data: await queryAlerts(filters) })
+    res.json(await queryAlerts(filters))
   } catch (error) {
     next(error)
   }

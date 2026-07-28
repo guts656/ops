@@ -1,0 +1,45 @@
+version: "2.4"
+services:
+  api:
+    build:
+      context: .
+      target: runtime
+    image: ops-platform-api:latest
+    container_name: ops-platform-api
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+    network_mode: host
+    volumes:
+      - ./storage/batch-files:/app/storage/batch-files
+      - ./storage/ssh-keys:/app/storage/ssh-keys
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3001/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  web:
+    build:
+      context: .
+      target: web
+    image: ops-platform-web:latest
+    container_name: ops-platform-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT-18080}:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - ops-platform
+
+networks:
+  ops-platform:
+    name: ops-platform

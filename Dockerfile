@@ -17,7 +17,7 @@ COPY --from=build /app/server ./server
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/prisma.config.ts ./prisma.config.ts
 COPY --from=build /app/src/generated ./src/generated
-RUN mkdir -p /app/storage/batch-files
+RUN mkdir -p /app/storage/batch-files /app/storage/ssh-keys
 EXPOSE 3001
 CMD ["sh", "-c", "npm run db:deploy && npm run start:server"]
 

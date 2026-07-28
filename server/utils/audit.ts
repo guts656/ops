@@ -1,4 +1,5 @@
 import type { HostAction, HostAuditLog } from '../types/host'
+import { shanghaiDate, shanghaiTime } from './time'
 
 function simpleHash(input: string) {
   let hash = 0
@@ -23,12 +24,12 @@ export function createHostAudit(operator: string, action: HostAction, target: st
 
   return {
     id: `HAUD-${Date.now()}`,
-    time: new Date().toLocaleString(),
+    time: shanghaiTime(new Date()),
     operator,
     action,
     target,
     result,
     detail,
-    retentionUntil: retention.toISOString().slice(0, 10),
+    retentionUntil: shanghaiDate(retention),
   }
 }

@@ -22,6 +22,7 @@ const ruleSchema = z.object({
   hostGroup: z.string().trim().optional(),
   metrics: z.array(z.enum(['cpu', 'memory', 'disk'])).min(1).max(3).optional(),
   threshold: z.coerce.number().int().min(1).max(100).optional(),
+  durationMinutes: z.coerce.number().int().positive().max(1440).optional(),
   cooldownMinutes: z.coerce.number().int().positive().max(1440).optional(),
   alertLevel: z.enum(['紧急', '严重', '警告', '提示']).optional(),
   daysOfWeek: z.array(z.coerce.number().int().min(1).max(7)).max(7).optional(),

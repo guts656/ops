@@ -6,10 +6,17 @@ function replaceAlert(alerts, updated) {
 }
 
 const defaultFilters = { includeSuppressed: false }
+const defaultPagination = { page: 1, pageSize: 20, total: 0 }
+
+function splitPagination(input = {}) {
+  const { page, pageSize, total, ...filters } = input
+  return { filters, page, pageSize, total }
+}
 
 export const useAlertStore = create((set, get) => ({
   alerts: [],
   filters: defaultFilters,
+  pagination: defaultPagination,
   summary: null,
   noiseStats: null,
   suppressedAlerts: [],
@@ -21,7 +28,8 @@ export const useAlertStore = create((set, get) => ({
   diagnosingId: null,
   diagnosis: null,
   setFilters(filters) {
-    set({ filters: { ...get().filters, ...filters } })
+    const { filters: nextFilters } = splitPagination(filters)
+    set({ filters: { ...get().filters, ...nextFilters }, pagination: { ...get().pagination, page: 1 } })
   },
   openDetail(alert) {
     set({ selectedAlert: alert, detailOpen: true })
@@ -30,14 +38,24 @@ export const useAlertStore = create((set, get) => ({
     set({ selectedAlert: null, detailOpen: false })
   },
   async load(filters = get().filters) {
-    const nextFilters = { ...get().filters, ...filters }
-    set({ loading: true, filters: nextFilters })
+    const { filters: filterInput, page, pageSize } = splitPagination(filters)
+    const currentPagination = get().pagination
+    const nextFilters = { ...get().filters, ...filterInput }
+    const nextPagination = {
+      ...currentPagination,
+      page: page ?? currentPagination.page,
+      pageSize: pageSize ?? currentPagination.pageSize,
+    }
+    set({ loading: true, filters: nextFilters, pagination: nextPagination })
     try {
-      const alerts = await queryAlerts(nextFilters)
-      set({ alerts })
+      const result = await queryAlerts({ ...nextFilters, page: nextPagination.page, pageSize: nextPagination.pageSize })
+      set({ alerts: result.data, pagination: { page: result.page, pageSize: result.pageSize, total: result.total } })
     } finally {
       set({ loading: false })
     }
+  },
+  async changePage(page, pageSize) {
+    await get().load({ page, pageSize })
   },
   async loadSummary() {
     const summary = await getAlertSummary()

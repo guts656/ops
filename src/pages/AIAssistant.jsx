@@ -4,6 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import AIChat from '../components/AIChat'
 import { downloadHealthReport, generateWeeklyHealthReport, getHealthReport, healthReportPreviewUrl, listHealthReports } from '../api/healthReports'
 import { getErrorMessage } from '../api/http'
+import { formatShanghaiTime } from '../utils/time'
 
 const healthLevelMeta = {
   excellent: { label: '优秀', color: 'green', status: 'success' },
@@ -16,9 +17,7 @@ const severityColor = { success: 'green', info: 'blue', warning: 'gold', error: 
 const priorityColor = { high: 'red', medium: 'gold', low: 'blue' }
 
 function formatTime(value) {
-  if (!value) return '-'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+  return formatShanghaiTime(value)
 }
 
 function formatDate(value) {

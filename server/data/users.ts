@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs'
 import { PERMISSIONS, ROLE_LABELS, ROLE_PERMISSIONS, type Permission, type Role } from '../config/permissions'
 import { prisma } from '../db/prisma'
 import type { AuthUser } from '../types/auth'
+import { shanghaiTime } from '../utils/time'
 
 type StoredUser = Awaited<ReturnType<typeof findStoredUser>>
 
@@ -71,7 +72,7 @@ function uniquePermissions(permissions: Permission[]) {
 }
 
 function formatTime(date: Date) {
-  return date.toLocaleString('zh-CN', { hour12: false })
+  return shanghaiTime(date)
 }
 
 export async function syncPermissionCatalog() {

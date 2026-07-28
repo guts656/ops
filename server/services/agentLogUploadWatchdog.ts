@@ -85,11 +85,12 @@ export async function checkAgentLogUploadWatchdog() {
         groups.size ? { group: { in: Array.from(groups) } } : undefined,
       ].filter(Boolean) as any,
     },
-    select: { id: true, ip: true, hostname: true, lastHeartbeat: true },
+    select: { id: true, ip: true, hostname: true, os: true, lastHeartbeat: true },
   })
 
   let alerted = 0
   for (const host of hosts) {
+    if (host.os === 'Windows') continue
     const lastHeartbeat = parseHeartbeat(host.lastHeartbeat)
     if (lastHeartbeat && lastHeartbeat < since) continue
     const count = await prisma.appLog.count({ where: { hostId: host.id, timestamp: { gte: shanghaiToday } } })

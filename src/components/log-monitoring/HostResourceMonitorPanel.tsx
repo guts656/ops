@@ -8,6 +8,7 @@ import { PERMISSIONS } from '../../config/permissions'
 import type { Host } from '../../types/host'
 import type { HostResourceMetric, HostResourceMonitorAlertRecord, HostResourceMonitorRule, HostResourceMonitorRuleInput } from '../../types/hostResourceMonitor'
 import type { LogMonitorChannel, LogMonitorTimeRange } from '../../types/log'
+import { formatShanghaiTime } from '../../utils/time'
 import PermissionGate from '../auth/PermissionGate'
 
 const alertLevelColor: Record<string, string> = { 紧急: 'red', 严重: 'volcano', 警告: 'gold', 提示: 'blue' }
@@ -42,7 +43,7 @@ function normalizeTimeRanges(values?: LogMonitorTimeRange[]) {
 }
 
 function formatDate(value?: string) {
-  return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
+  return formatShanghaiTime(value)
 }
 
 function toPayload(values: RuleFormValues): HostResourceMonitorRuleInput {
@@ -66,6 +67,7 @@ function toPayload(values: RuleFormValues): HostResourceMonitorRuleInput {
     ...hostTarget,
     metrics: values.metrics,
     threshold: values.threshold,
+    durationMinutes: values.durationMinutes,
     cooldownMinutes: values.cooldownMinutes,
     alertLevel: values.alertLevel,
     daysOfWeek: values.daysOfWeek,
@@ -84,6 +86,7 @@ function toFormValues(rule?: HostResourceMonitorRule): Partial<RuleFormValues> {
       hostIds: [],
       metrics: ['cpu', 'memory', 'disk'],
       threshold: 80,
+      durationMinutes: 1,
       cooldownMinutes: 30,
       alertLevel: '警告',
       daysOfWeek: [1, 2, 3, 4, 5, 6, 7],
@@ -241,7 +244,7 @@ export default function HostResourceMonitorPanel({ hosts }: { hosts: Host[] }) {
     },
     { title: '主机范围', width: 180, render: (_, rule) => <Typography.Text>{formatRuleHostScope(rule)}</Typography.Text> },
     { title: '指标', dataIndex: 'metrics', width: 170, render: (metrics: HostResourceMetric[]) => <Space wrap>{metrics.map((metric) => <Tag key={metric} color={metricColor[metric]}>{metricLabel[metric]}</Tag>)}</Space> },
-    { title: '阈值', width: 150, render: (_, rule) => <Space direction="vertical" size={0}><Typography.Text>使用率 ≥ <Typography.Text strong>{rule.threshold}%</Typography.Text></Typography.Text><Typography.Text type="secondary">冷却 {rule.cooldownMinutes} 分钟</Typography.Text></Space> },
+    { title: '阈值', width: 170, render: (_, rule) => <Space direction="vertical" size={0}><Typography.Text>使用率 ≥ <Typography.Text strong>{rule.threshold}%</Typography.Text></Typography.Text><Typography.Text type="secondary">持续 {rule.durationMinutes ?? 1} 分钟</Typography.Text><Typography.Text type="secondary">冷却 {rule.cooldownMinutes} 分钟</Typography.Text></Space> },
     { title: '周期', width: 260, render: (_, rule) => <Typography.Text type="secondary">{scheduleText(rule)}</Typography.Text> },
     { title: '通知', width: 170, render: (_, rule) => <Space wrap>{rule.notification.channels.map((channel) => <Tag key={channel} color={channel === '站内告警' ? 'blue' : 'purple'}>{channel}</Tag>)}</Space> },
     { title: '触发', width: 130, render: (_, rule) => <Space direction="vertical" size={0}><Typography.Text strong>{rule.triggerCount} 次</Typography.Text><Typography.Text type="secondary">{rule.lastTriggeredAt ? formatDate(rule.lastTriggeredAt) : '未触发'}</Typography.Text></Space> },
@@ -268,7 +271,7 @@ export default function HostResourceMonitorPanel({ hosts }: { hosts: Host[] }) {
         <Col xs={24} md={6}><Card><Statistic title="触发记录" value={stats.triggered} valueStyle={{ color: stats.triggered ? '#faad14' : undefined }} /></Card></Col>
       </Row>
 
-      <Alert showIcon type="info" message="主机资源阈值监控" description="对已纳管主机的 CPU、内存、磁盘使用率设置阈值；任一选中指标达到阈值时触发告警，命中冷却期时不会重复刷屏。" />
+      <Alert showIcon type="info" message="主机资源阈值监控" description="对已纳管主机的 CPU、内存、磁盘使用率设置阈值和持续时间；任一选中指标在持续窗口内都达到阈值时触发告警，命中冷却期时不会重复刷屏。" />
 
       <Card title="主机资源监控规则" extra={<Space><Radio.Group size="small" optionType="button" buttonStyle="solid" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} options={[{ label: `全部 ${stats.total}`, value: 'all' }, { label: `启用 ${stats.enabled}`, value: 'enabled' }, { label: `停用 ${stats.disabled}`, value: 'disabled' }]} /><Button icon={<ReloadOutlined />} onClick={load}>刷新</Button><PermissionGate permission={PERMISSIONS.LOGS_MANAGE}><Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建资源监控</Button></PermissionGate></Space>}>
         <Table rowKey="id" loading={loading} columns={columns} dataSource={filteredRules} pagination={{ pageSize: 8 }} rowClassName={(rule) => rule.enabled ? '' : 'monitor-rule-disabled-row'} />
@@ -322,8 +325,9 @@ export default function HostResourceMonitorPanel({ hosts }: { hosts: Host[] }) {
             <Col span={12}><Form.Item name="alertLevel" label="告警级别"><Select options={['紧急', '严重', '警告', '提示'].map((level) => ({ label: level, value: level }))} /></Form.Item></Col>
           </Row>
           <Row gutter={16}>
-            <Col span={12}><Form.Item name="threshold" label="使用率阈值" rules={[{ required: true, message: '请输入阈值' }]}><InputNumber min={1} max={100} style={{ width: '100%' }} addonAfter="%" /></Form.Item></Col>
-            <Col span={12}><Form.Item name="cooldownMinutes" label="冷却期"><InputNumber min={1} max={1440} style={{ width: '100%' }} addonAfter="分钟" /></Form.Item></Col>
+            <Col span={8}><Form.Item name="threshold" label="使用率阈值" rules={[{ required: true, message: '请输入阈值' }]}><InputNumber min={1} max={100} style={{ width: '100%' }} addonAfter="%" /></Form.Item></Col>
+            <Col span={8}><Form.Item name="durationMinutes" label="持续时间" tooltip="大于 1 分钟时，最近持续窗口内采样值都达到阈值才告警。"><InputNumber min={1} max={1440} style={{ width: '100%' }} addonAfter="分钟" /></Form.Item></Col>
+            <Col span={8}><Form.Item name="cooldownMinutes" label="冷却期"><InputNumber min={1} max={1440} style={{ width: '100%' }} addonAfter="分钟" /></Form.Item></Col>
           </Row>
           <Form.Item name="daysOfWeek" label="生效周期"><Checkbox.Group options={dayOptions} /></Form.Item>
           <Card size="small" title={<Space><ClockCircleOutlined />时间段</Space>} style={{ marginBottom: 16 }}>
@@ -363,7 +367,7 @@ export default function HostResourceMonitorPanel({ hosts }: { hosts: Host[] }) {
             <Descriptions.Item label="说明">{selectedRule.description || '-'}</Descriptions.Item>
             <Descriptions.Item label="主机范围">{formatRuleHostScope(selectedRule, true)}</Descriptions.Item>
             <Descriptions.Item label="监控指标"><Space wrap>{selectedRule.metrics.map((metric) => <Tag key={metric} color={metricColor[metric]}>{metricLabel[metric]}</Tag>)}</Space></Descriptions.Item>
-            <Descriptions.Item label="触发条件">任一选中指标使用率 ≥ {selectedRule.threshold}%</Descriptions.Item>
+            <Descriptions.Item label="触发条件">任一选中指标使用率持续 {selectedRule.durationMinutes ?? 1} 分钟 ≥ {selectedRule.threshold}%</Descriptions.Item>
             <Descriptions.Item label="冷却期">{selectedRule.cooldownMinutes} 分钟</Descriptions.Item>
             <Descriptions.Item label="周期">{scheduleText(selectedRule)}</Descriptions.Item>
             <Descriptions.Item label="通知">{selectedRule.notification.channels.join('、')}；{selectedRule.notification.receivers || '未指定接收人'}</Descriptions.Item>

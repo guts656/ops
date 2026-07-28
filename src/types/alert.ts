@@ -24,6 +24,7 @@ export interface AlertItem {
   suppressionUntil?: string
   relatedType?: string
   relatedId?: string
+  hostTargets?: Array<{ id: string; ip: string; hostname: string; tags: string[]; group?: string }>
   createdAt?: string
   updatedAt?: string
 }
@@ -39,6 +40,15 @@ export interface AlertFilters {
   isSuppressed?: boolean
   startTime?: string
   endTime?: string
+  page?: number
+  pageSize?: number
+}
+
+export interface AlertPage {
+  data: AlertItem[]
+  page: number
+  pageSize: number
+  total: number
 }
 
 export interface CreateAlertInput {

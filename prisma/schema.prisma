@@ -290,6 +290,7 @@ model HostResourceMonitorRule {
   hostGroup       String?                    @map("host_group")
   metrics         String[]                   @default(["cpu", "memory", "disk"])
   threshold       Int                        @default(80)
+  durationMinutes Int                        @default(1) @map("duration_minutes")
   cooldownMinutes Int                        @default(30) @map("cooldown_minutes")
   alertLevel      String                     @default("警告") @map("alert_level")
   daysOfWeek      Int[]                      @default([]) @map("days_of_week")
@@ -490,6 +491,7 @@ model Host {
   services         HostService[]
   serviceEvents    ServiceEvent[]
   containers       HostContainer[]
+  logCollectionStatus HostLogCollectionStatus?
   pullCredential   HostPullCredential?
   batchTargets     BatchJobTarget[]
   batchArtifacts   BatchJobArtifact[]
@@ -499,6 +501,28 @@ model Host {
 
   @@index([maintenanceEnabled, maintenanceUntil])
   @@map("hosts")
+}
+
+model HostLogCollectionStatus {
+  hostId        String   @id @map("host_id")
+  host          Host     @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  collector     String   @default("ops-agent")
+  status        String   @default("ok")
+  sampledAt     DateTime @default(now()) @map("sampled_at")
+  configPaths   String[] @default([]) @map("config_paths")
+  matchedFiles  Int      @default(0) @map("matched_files")
+  readLines     Int      @default(0) @map("read_lines")
+  uploadedLines Int      @default(0) @map("uploaded_lines")
+  eventLogs     Int      @default(0) @map("event_logs")
+  errorMessage  String?  @map("error_message")
+  paths         Json     @default("[]")
+  rawPayload    Json     @default("{}") @map("raw_payload")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([sampledAt])
+  @@map("host_log_collection_statuses")
 }
 
 model HostPullCredential {

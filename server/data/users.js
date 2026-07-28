@@ -1,6 +1,11 @@
 import bcrypt from 'bcryptjs';
 import { PERMISSIONS, ROLE_LABELS, ROLE_PERMISSIONS } from '../config/permissions';
 import { prisma } from '../db/prisma';
+const shanghaiFormatter = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, hourCycle: 'h23' });
+function shanghaiTime(date) {
+    const parts = Object.fromEntries(shanghaiFormatter.formatToParts(date).map((part) => [part.type, part.value]));
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
 const permissionLabels = {
     [PERMISSIONS.DASHBOARD_VIEW]: '查看仪表盘',
     [PERMISSIONS.ALERTS_VIEW]: '查看告警中心',
@@ -40,7 +45,7 @@ function uniquePermissions(permissions) {
     return Array.from(new Set(permissions));
 }
 function formatTime(date) {
-    return date.toLocaleString('zh-CN', { hour12: false });
+    return shanghaiTime(date);
 }
 export async function syncPermissionCatalog() {
     for (const permission of validPermissions) {

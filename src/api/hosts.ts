@@ -1,5 +1,5 @@
 import type { HostContainerItem } from '../types/container'
-import type { AddHostFormValues, AgentBackendDiagnosisResult, AgentJob, EditHostValues, Host, HostAuditLog, HostConnectionValues, HostFilters, HostMaintenanceValues, HostResourcePoint } from '../types/host'
+import type { AddHostFormValues, AgentBackendDiagnosisResult, AgentJob, AgentUpdateJobsResult, EditHostValues, Host, HostAuditLog, HostConnectionValues, HostFilters, HostLogCollectionStatus, HostMaintenanceValues, HostResourcePoint, LinuxSshKeyInfo } from '../types/host'
 import type { HostServiceItem, ServiceEventItem } from '../types/service'
 import { http } from './http'
 
@@ -43,9 +43,19 @@ export async function getHostServiceEvents(id: string): Promise<ServiceEventItem
   return response.data.data
 }
 
+export async function getHostLogCollectionStatus(id: string): Promise<HostLogCollectionStatus | undefined> {
+  const response = await http.get<{ data?: HostLogCollectionStatus }>(`/hosts/${id}/log-collection-status`)
+  return response.data.data
+}
+
 export async function getHostOptions(): Promise<{ groups: string[]; tags: string[] }> {
   const response = await http.get<{ groups: string[]; tags: string[] }>('/hosts/options')
   return response.data
+}
+
+export async function getLinuxSshKeyInfo(): Promise<LinuxSshKeyInfo> {
+  const response = await http.get<{ data: LinuxSshKeyInfo }>('/hosts/linux-ssh-key')
+  return response.data.data
 }
 
 export async function testHostConnection(values: Partial<AddHostFormValues>): Promise<{ success: boolean; hostname: string; os: 'Linux' | 'Windows'; osVersion?: string; message: string }> {
@@ -108,6 +118,15 @@ export async function repairAgentBackendRoutes(host: Host, credentials: HostConn
   return response.data.data
 }
 
+export async function downloadWindowsOfflineAgentPackage(host: Host, options?: { apiBaseUrl?: string }): Promise<{ filename: string; blob: Blob }> {
+  const response = await http.post<Blob>(`/hosts/${host.id}/offline-agent-package`, options ?? {}, { responseType: 'blob' })
+  const disposition = response.headers['content-disposition']
+  const filename = typeof disposition === 'string'
+    ? disposition.match(/filename="?([^"]+)"?/)?.[1] ?? `install-ops-agent-${host.ip}.ps1`
+    : `install-ops-agent-${host.ip}.ps1`
+  return { filename, blob: response.data }
+}
+
 export async function reinstallAgent(host: Host, credentials: HostConnectionValues, options?: { apiBaseUrl?: string }): Promise<Host> {
   const response = await http.post<{ data: Host }>(`/hosts/${host.id}/reinstall-agent`, { ...credentials, ...options })
   return response.data.data
@@ -118,17 +137,32 @@ export async function restartAgent(host: Host, credentials: HostConnectionValues
   return response.data.data
 }
 
-export async function startHostService(host: Host, serviceId: string, credentials: HostConnectionValues): Promise<Host> {
-  const response = await http.post<{ data: Host }>(`/hosts/${host.id}/services/${serviceId}/start`, credentials)
+export async function queueAgentUpdateJobs(options: { hostIds?: string[]; os?: 'Linux' | 'Windows'; onlyOutdated?: boolean }): Promise<AgentUpdateJobsResult> {
+  const response = await http.post<{ data: AgentUpdateJobsResult }>('/hosts/agent-update-jobs', options)
   return response.data.data
 }
 
-export async function stopHostService(host: Host, serviceId: string, credentials: HostConnectionValues): Promise<Host> {
-  const response = await http.post<{ data: Host }>(`/hosts/${host.id}/services/${serviceId}/stop`, credentials)
+export async function startHostService(host: Host, serviceId: string, credentials?: Partial<HostConnectionValues>): Promise<Host> {
+  const response = await http.post<{ data: Host }>(`/hosts/${host.id}/services/${serviceId}/start`, credentials ?? {})
+  return response.data.data
+}
+
+export async function stopHostService(host: Host, serviceId: string, credentials?: Partial<HostConnectionValues>): Promise<Host> {
+  const response = await http.post<{ data: Host }>(`/hosts/${host.id}/services/${serviceId}/stop`, credentials ?? {})
+  return response.data.data
+}
+
+export async function restartHostService(host: Host, serviceId: string, credentials?: Partial<HostConnectionValues>): Promise<Host> {
+  const response = await http.post<{ data: Host }>(`/hosts/${host.id}/services/${serviceId}/restart`, credentials ?? {})
   return response.data.data
 }
 
 export async function deleteHostService(host: Host, serviceId: string): Promise<Host> {
   const response = await http.delete<{ data: Host }>(`/hosts/${host.id}/services/${serviceId}`)
+  return response.data.data
+}
+
+export async function ignoreHostService(host: Host, serviceId: string): Promise<Host> {
+  const response = await http.post<{ data: Host }>(`/hosts/${host.id}/services/${serviceId}/ignore`)
   return response.data.data
 }

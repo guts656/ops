@@ -8,6 +8,7 @@ import PermissionGate from '../auth/PermissionGate'
 import { PERMISSIONS } from '../../config/permissions'
 import type { CgiMonitorAlertRecord, CgiMonitorChannel, CgiMonitorRule, CgiMonitorRuleInput, CgiMonitorTimeRange } from '../../types/cgiMonitor'
 import type { Host } from '../../types/host'
+import { formatShanghaiTime } from '../../utils/time'
 import SelfHealingBindingCard from './SelfHealingBindingCard'
 
 const alertLevelColor: Record<string, string> = { 紧急: 'red', 严重: 'volcano', 警告: 'gold', 提示: 'blue' }
@@ -237,7 +238,7 @@ export default function CgiMonitorPanel({ hosts }: { hosts: Host[] }) {
     { title: '关键字规则', width: 220, render: (_, rule) => <Tag color={rule.matchMode === 'contains' ? 'blue' : 'orange'}>{matchModeText(rule)}</Tag> },
     { title: '检查策略', width: 190, render: (_, rule) => <Space direction="vertical" size={0}><Typography.Text>{rule.intervalSeconds}s / 连续 {rule.failureThreshold} 次</Typography.Text><Typography.Text type="secondary">期望状态：{rule.expectedStatus || '不限'}</Typography.Text></Space> },
     { title: '最近状态', width: 190, render: (_, rule) => <Space direction="vertical" size={0}><Typography.Text>{rule.lastStatusCode || '-'} · {rule.lastLatencyMs ?? '-'}ms</Typography.Text><Typography.Text type={rule.consecutiveFailures ? 'danger' : 'secondary'}>连续失败 {rule.consecutiveFailures} 次</Typography.Text></Space> },
-    { title: '触发', width: 120, render: (_, rule) => <Space direction="vertical" size={0}><Typography.Text strong>{rule.triggerCount} 次</Typography.Text><Typography.Text type="secondary">{rule.lastTriggeredAt ? new Date(rule.lastTriggeredAt).toLocaleString('zh-CN', { hour12: false }) : '未触发'}</Typography.Text></Space> },
+    { title: '触发', width: 120, render: (_, rule) => <Space direction="vertical" size={0}><Typography.Text strong>{rule.triggerCount} 次</Typography.Text><Typography.Text type="secondary">{rule.lastTriggeredAt ? formatShanghaiTime(rule.lastTriggeredAt) : '未触发'}</Typography.Text></Space> },
     {
       title: '操作',
       width: 220,
@@ -274,7 +275,7 @@ export default function CgiMonitorPanel({ hosts }: { hosts: Host[] }) {
           dataSource={alerts}
           pagination={{ pageSize: 6 }}
           columns={[
-            { title: '时间', dataIndex: 'createdAt', width: 190, render: (value) => new Date(value).toLocaleString('zh-CN', { hour12: false }) },
+            { title: '时间', dataIndex: 'createdAt', width: 190, render: (value) => formatShanghaiTime(value) },
             { title: '规则', dataIndex: 'ruleId', render: (ruleId) => rules.find((rule) => rule.id === ruleId)?.name || ruleId },
             { title: '状态/耗时', width: 120, render: (_, record) => `${record.statusCode || '-'} / ${record.latencyMs ?? '-'}ms` },
             { title: '错误', dataIndex: 'errorMessage', render: (value) => value || '-' },

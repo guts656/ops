@@ -8,6 +8,22 @@ function Metadata({ value }) {
   return <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{JSON.stringify(value, null, 2)}</pre>
 }
 
+function HostTargets({ alert }) {
+  const hosts = Array.isArray(alert?.hostTargets) ? alert.hostTargets : []
+  if (!hosts.length) return <Typography.Text type="secondary">-</Typography.Text>
+  return (
+    <>
+      {hosts.map((host) => (
+        <span key={host.id || host.ip} style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginRight: 8 }}>
+          <Tag color="geekblue">IP {host.ip}</Tag>
+          <Typography.Text>{host.hostname || '-'}</Typography.Text>
+          {(host.tags || []).map((tag) => <Tag key={`${host.id}-${tag}`}>{tag}</Tag>)}
+        </span>
+      ))}
+    </>
+  )
+}
+
 export default function AlertDetailDrawer({ alert, open, onClose }) {
   return (
     <Drawer title="告警详情" open={open} onClose={onClose} width={620} destroyOnHidden>

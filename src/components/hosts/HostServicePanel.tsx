@@ -25,14 +25,15 @@ interface Props {
   services?: HostServiceItem[]
   onStart?: (service: HostServiceItem) => void
   onStop?: (service: HostServiceItem) => void
-  onDelete?: (service: HostServiceItem) => void
+  onRestart?: (service: HostServiceItem) => void
+  onIgnore?: (service: HostServiceItem) => void
 }
 
 function isHealthy(status: string) {
   return healthyStatuses.has(String(status).toLowerCase())
 }
 
-export default function HostServicePanel({ services = [], onStart, onStop, onDelete }: Props) {
+export default function HostServicePanel({ services = [], onStart, onStop, onRestart, onIgnore }: Props) {
   const columns: ColumnsType<HostServiceItem> = [
     { title: '服务', dataIndex: 'name', render: (value) => <Typography.Text strong>{value}</Typography.Text> },
     { title: '状态', dataIndex: 'status', width: 120, render: (value) => <Tag color={statusColor[String(value)] || statusColor[String(value).toLowerCase()] || 'blue'}>{value}</Tag> },
@@ -47,13 +48,14 @@ export default function HostServicePanel({ services = [], onStart, onStop, onDel
       render: (_, record) => (
         <PermissionGate permission={PERMISSIONS.HOSTS_AGENT}>
           <Space wrap>
-            {isHealthy(record.status) ? <Button type="link" onClick={() => onStop?.(record)}>停止</Button> : <Button type="link" onClick={() => onStart?.(record)}>启动</Button>}
+            {onStart && onStop ? (isHealthy(record.status) ? <Button type="link" onClick={() => onStop(record)}>停止</Button> : <Button type="link" onClick={() => onStart(record)}>启动</Button>) : null}
+            {onRestart ? <Button type="link" onClick={() => onRestart(record)}>重启</Button> : null}
             <Popconfirm
-              title="删除服务记录？"
-              description="仅删除平台中的服务记录，不会卸载或删除主机上的真实服务；如果 Agent 后续仍上报该服务，记录会重新出现。"
-              onConfirm={() => onDelete?.(record)}
+              title="忽略服务？"
+              description="忽略后该服务不会再展示或触发服务告警；不会影响主机上的真实服务。"
+              onConfirm={() => onIgnore?.(record)}
             >
-              <Button type="link" danger>删除记录</Button>
+              <Button type="link">忽略服务</Button>
             </Popconfirm>
           </Space>
         </PermissionGate>

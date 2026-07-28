@@ -80,7 +80,7 @@ export default function LogQuery() {
       <Card>
         <Typography.Title level={3}>日志查询</Typography.Title>
         <Typography.Paragraph type="secondary">
-          查询后端持久化日志，支持关键字、主机、来源、服务、级别和时间范围筛选，分页由服务端完成以避免大日志量下前端卡顿。
+          查询后端持久化日志，支持关键字、主机、来源、服务、级别和时间范围筛选。未选择时间时，全局查询默认最近 1 小时；按主机或文件来源查询默认最近 24 小时，适合排查非全天更新的低频业务日志。
         </Typography.Paragraph>
       </Card>
 

@@ -1,4 +1,4 @@
-import { CloudServerOutlined, PlusOutlined, WarningOutlined, CheckCircleOutlined, ToolOutlined } from '@ant-design/icons'
+import { CloudServerOutlined, PlusOutlined, WarningOutlined, CheckCircleOutlined, ToolOutlined, SyncOutlined } from '@ant-design/icons'
 import { Button, Card, Col, Form, Input, Popconfirm, Progress, Row, Segmented, Select, Space, Statistic, Table, Tabs, Tag, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useState } from 'react'
@@ -12,12 +12,17 @@ import LogCollectionRulePanel from '../components/hosts/LogCollectionRulePanel'
 import { PERMISSIONS } from '../config/permissions'
 import type { EditHostValues, Host, HostCategory, HostFilters } from '../types/host'
 import { useHostStore } from '../stores/hostStore'
+import { queueAgentUpdateJobs } from '../api/hosts'
 import { getHostCategory, hostCategoryColor } from '../utils/hostStatus'
 import { formatShanghaiTime } from '../utils/time'
 
 const lifecycleStatusColor = { 在线: 'green', 离线: 'red', 纳管中: 'blue' }
 const agentColor = { 正常: 'green', 异常: 'red', 未安装: 'default', 安装中: 'blue' }
 type HostCategoryFilter = '全部' | HostCategory
+
+function isOfflineInstallPending(host: Host) {
+  return host.os === 'Windows' && host.agentStatus === '安装中' && !host.pullCredential?.enabled
+}
 
 export default function Hosts() {
   const navigate = useNavigate()
@@ -48,6 +53,7 @@ export default function Hosts() {
   const [editing, setEditing] = useState(false)
   const [remanagingId, setRemanagingId] = useState<string>()
   const [activeCategory, setActiveCategory] = useState<HostCategoryFilter>('全部')
+  const [bulkAgentUpdateLoading, setBulkAgentUpdateLoading] = useState(false)
 
   useEffect(() => {
     load()
@@ -104,6 +110,21 @@ export default function Hosts() {
     }
   }
 
+  const handleBulkAgentUpdate = async () => {
+    setBulkAgentUpdateLoading(true)
+    try {
+      const result = await queueAgentUpdateJobs({ onlyOutdated: true })
+      if (result.queued.length) {
+        message.success(`已下发 ${result.queued.length} 台 Agent 更新任务，目标版本 ${result.targetVersion}；跳过 ${result.skipped.length} 台`)
+      } else {
+        message.info(`未下发更新任务；跳过 ${result.skipped.length} 台。${result.skipped[0]?.reason || ''}`)
+      }
+      await refreshHosts()
+    } finally {
+      setBulkAgentUpdateLoading(false)
+    }
+  }
+
   const visibleHosts = activeCategory === '全部' ? hosts : hosts.filter((host) => getHostCategory(host) === activeCategory)
   const onlineCount = hosts.filter((host) => getHostCategory(host) === '在线').length
   const offlineCount = hosts.filter((host) => getHostCategory(host) === '离线').length
@@ -117,7 +138,10 @@ export default function Hosts() {
       const category = getHostCategory(record)
       return <Space direction="vertical" size={0}><Tag color={hostCategoryColor[category]}>{category}</Tag>{record.status === '纳管中' ? <Tag color={lifecycleStatusColor[record.status]}>纳管中</Tag> : null}</Space>
     } },
-    { title: 'Agent', dataIndex: 'agentStatus', width: 120, render: (_, record) => <Space direction="vertical" size={0}><Tag color={agentColor[record.agentStatus]}>{record.agentStatus}</Tag><Typography.Text type="secondary">{record.agentVersion}</Typography.Text></Space> },
+    { title: 'Agent', dataIndex: 'agentStatus', width: 140, render: (_, record) => {
+      const offlinePending = isOfflineInstallPending(record)
+      return <Space direction="vertical" size={0}><Tag color={offlinePending ? 'gold' : agentColor[record.agentStatus]}>{offlinePending ? '待离线安装' : record.agentStatus}</Tag><Typography.Text type="secondary">{record.agentVersion}</Typography.Text></Space>
+    } },
     { title: '标签', dataIndex: 'tags', width: 220, render: (values) => <Space size={[0, 4]} wrap>{values.map((tag: string) => <Tag key={tag}>{tag}</Tag>)}</Space> },
     { title: '主机组', dataIndex: 'group', width: 150, ellipsis: true },
     { title: '最后心跳', dataIndex: 'lastHeartbeat', width: 170, render: (value) => formatShanghaiTime(value) },
@@ -141,9 +165,20 @@ export default function Hosts() {
             <Typography.Title level={3}>主机管理</Typography.Title>
             <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>统一管理服务器纳管、Agent 生命周期、资源趋势和合规审计。</Typography.Paragraph>
           </div>
-          <PermissionGate permission={PERMISSIONS.HOSTS_MANAGE}>
-            <Button type="primary" icon={<PlusOutlined />} onClick={openAddModal}>新增主机</Button>
-          </PermissionGate>
+          <Space wrap>
+            <PermissionGate permission={PERMISSIONS.HOSTS_AGENT}>
+              <Popconfirm
+                title="批量更新 Agent？"
+                description="只会给在线且支持自更新的 Agent 下发任务；低版本 Agent 会跳过并提示原因。"
+                onConfirm={handleBulkAgentUpdate}
+              >
+                <Button icon={<SyncOutlined />} loading={bulkAgentUpdateLoading}>批量更新 Agent</Button>
+              </Popconfirm>
+            </PermissionGate>
+            <PermissionGate permission={PERMISSIONS.HOSTS_MANAGE}>
+              <Button type="primary" icon={<PlusOutlined />} onClick={openAddModal}>新增主机</Button>
+            </PermissionGate>
+          </Space>
         </div>
       </Card>
 

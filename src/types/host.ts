@@ -2,10 +2,11 @@ export type HostStatus = '在线' | '离线' | '纳管中'
 export type HostCategory = '在线' | '离线' | '维护'
 export type OsType = 'Linux' | 'Windows'
 export type AuthType = '密码' | '密钥'
+export type AgentInstallMode = 'remote' | 'offline'
 export type BatchStatus = '等待中' | '处理中' | '成功' | '失败'
-export type HostAction = '新增主机' | '测试连接' | '编辑主机' | '删除主机' | '重新纳管' | '刷新主机信息' | '拉取主机指标' | '启用自动Pull' | '停用自动Pull' | '重新安装Agent' | '重启Agent' | '诊断Agent回连' | '修复Agent回连路由' | '启动服务' | '停止服务' | '重启服务' | '删除服务记录' | '进入维护' | '退出维护' | '查看详情'
-export type AgentJobType = 'test_connection' | 'install_agent' | 'reinstall_agent' | 'restart_agent' | 'remanage' | 'refresh_host_info' | 'pull_host_metrics' | 'diagnose_agent_backend' | 'repair_agent_backend_routes' | 'start_service' | 'stop_service' | 'restart_service'
-export type AgentJobTransport = 'ssh' | 'winrm'
+export type HostAction = '新增主机' | '测试连接' | '编辑主机' | '删除主机' | '重新纳管' | '刷新主机信息' | '拉取主机指标' | '启用自动Pull' | '停用自动Pull' | '重新安装Agent' | '生成离线Agent包' | '重启Agent' | '更新Agent' | '诊断Agent回连' | '修复Agent回连路由' | '启动服务' | '停止服务' | '重启服务' | '删除服务记录' | '忽略服务' | '进入维护' | '退出维护' | '查看详情'
+export type AgentJobType = 'test_connection' | 'install_agent' | 'reinstall_agent' | 'restart_agent' | 'update_agent' | 'remanage' | 'refresh_host_info' | 'pull_host_metrics' | 'diagnose_agent_backend' | 'repair_agent_backend_routes' | 'start_service' | 'stop_service' | 'restart_service' | 'batch_run_script'
+export type AgentJobTransport = 'ssh' | 'winrm' | 'agent'
 export type AgentJobStatus = 'pending' | 'running' | 'success' | 'failed'
 
 export interface HostMaintenance {
@@ -31,6 +32,33 @@ export interface HostPullCredentialStatus {
   intervalSeconds: number
   lastPulledAt?: string
   lastError?: string
+  updatedAt: string
+}
+
+export interface HostLogCollectionPathStatus {
+  path: string
+  expandedPath?: string
+  exists?: boolean
+  matchedFiles: number
+  readLines: number
+  uploadedLines: number
+  error?: string
+  files?: string[]
+}
+
+export interface HostLogCollectionStatus {
+  hostId: string
+  collector: string
+  status: 'ok' | 'warning' | 'error'
+  sampledAt: string
+  configPaths: string[]
+  matchedFiles: number
+  readLines: number
+  uploadedLines: number
+  eventLogs: number
+  lastError?: string
+  paths: HostLogCollectionPathStatus[]
+  rawPayload?: unknown
   updatedAt: string
 }
 
@@ -99,18 +127,32 @@ export interface AgentJob {
   stderr: string
 }
 
-export type HostConnectionValues = Pick<AddHostFormValues, 'sshUsername' | 'authType' | 'password' | 'privateKey' | 'sshPort'> & { apiBaseUrl?: string }
+export interface AgentUpdateJobsResult {
+  targetVersion: string
+  queued: Array<{ hostId: string; ip: string; hostname: string; version: string }>
+  skipped: Array<{ hostId: string; ip: string; hostname: string; reason: string }>
+}
+
+export type HostConnectionValues = {
+  sshUsername: string
+  authType: AuthType
+  password?: string
+  privateKey?: string
+  sshPort: number
+  apiBaseUrl?: string
+}
 
 export interface AddHostFormValues {
   ips: string
   hostname?: string
   os?: OsType
   osVersion?: string
-  sshUsername: string
-  authType: AuthType
+  installMode?: AgentInstallMode
+  sshUsername?: string
+  authType?: AuthType
   password?: string
   privateKey?: string
-  sshPort: number
+  sshPort?: number
   group: string
   tags?: string[]
   changeNo?: string
@@ -142,6 +184,22 @@ export interface BatchAddResult {
   ip: string
   status: BatchStatus
   message: string
+}
+
+export interface LinuxSshKeyInfo {
+  publicKey: string
+  authorizedKey: string
+  allowedFrom: string
+  privateKeyPath: string
+  installCommand: string
+}
+
+export interface LinuxSshKeyInfo {
+  publicKey: string
+  authorizedKey: string
+  allowedFrom: string
+  privateKeyPath: string
+  installCommand: string
 }
 
 export interface HostStats {

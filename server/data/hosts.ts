@@ -1,17 +1,21 @@
 import { networkInterfaces } from 'node:os'
+import type { Prisma } from '../../src/generated/prisma/client'
 import type { AddHostFormValues, AgentBackendDiagnosisResult, AgentJob, AgentJobStatus, AgentJobTransport, AgentJobType, EditHostValues, Host, HostAuditLog, HostFilters, HostResourcePoint } from '../types/host'
 import { buildHostAuditHashChain, createHostAudit } from '../utils/audit.ts'
 import { generateAgentToken, hashAgentToken } from '../utils/agentToken.ts'
 import { decryptSecret, encryptSecret } from '../utils/credentialCrypto.ts'
-import { AGENT_VERSION, collectRemoteMetrics, diagnoseRemoteAgentBackends, installRemoteAgent, repairRemoteAgentBackendRoutes, restartRemoteAgent, testRemoteConnection } from '../remote/agentInstaller.ts'
+import { AGENT_VERSION, buildWindowsOfflineAgentInstaller, collectRemoteMetrics, diagnoseRemoteAgentBackends, installRemoteAgent, repairRemoteAgentBackendRoutes, restartRemoteAgent, testRemoteConnection } from '../remote/agentInstaller.ts'
 import { runSshCommand } from '../remote/ssh.ts'
 import type { AgentOperationResult, RemoteConnectionInput } from '../remote/types'
 import { runWinrmCommand } from '../remote/winrm.ts'
 import { prisma } from '../db/prisma.ts'
 import { executeHostServiceControl } from '../services/hostServiceControl.ts'
 import { shanghaiTime } from '../utils/time.ts'
+import { signOfflineAgentInstallerToken, verifyOfflineAgentInstallerToken } from '../utils/offlineAgentInstallerToken.ts'
+import { getLinuxSshPrivateKey } from '../utils/linuxSshKey.ts'
 import { evaluateHostResourceMonitorRulesForHost } from './hostResourceMonitorRules.ts'
 import { normalizeMarketType } from '../utils/tradingSessions.ts'
+import { resolveAlert } from './alerts.ts'
 
 export const hostGroups = ['核心交易区', '支付专区', '风控专区', 'DCORE OFFICE', '测试资源池']
 export const hostTags = ['生产', '数据库', '中间件', '支付', '风控', 'Windows', 'Linux', '高可用', '批处理']
@@ -20,10 +24,18 @@ type HostRow = NonNullable<Awaited<ReturnType<typeof prisma.host.findFirst>>> & 
 type HostAuditRow = NonNullable<Awaited<ReturnType<typeof prisma.hostAuditLog.findFirst>>>
 type HostAgentJobRow = NonNullable<Awaited<ReturnType<typeof prisma.hostAgentJob.findFirst>>>
 type HostPullCredentialRow = NonNullable<Awaited<ReturnType<typeof prisma.hostPullCredential.findFirst>>>
+type ServiceControlAction = 'start' | 'stop' | 'restart'
 
-type HostConnectionValues = Pick<AddHostFormValues, 'sshUsername' | 'authType' | 'password' | 'privateKey' | 'sshPort'>
+type HostConnectionValues = {
+  sshUsername: string
+  authType: NonNullable<AddHostFormValues['authType']>
+  password?: string
+  privateKey?: string
+  sshPort: number
+}
 type HostMaintenanceValues = { enabled: boolean; reason?: string; until?: string }
 type AgentInstallOverrides = { apiBaseUrl?: string }
+const PLATFORM_LINUX_SSH_KEY_REF = '__OPS_PLATFORM_LINUX_SSH_KEY__'
 
 function trend(seed: number): HostResourcePoint[] {
   return Array.from({ length: 24 }, (_, index) => {
@@ -208,9 +220,13 @@ function buildConnection(host: Host, credentials: HostConnectionValues): RemoteC
     username: credentials.sshUsername,
     authType: credentials.authType,
     password: credentials.password,
-    privateKey: credentials.privateKey,
+    privateKey: resolvePrivateKey(credentials),
     os: host.os,
   }
+}
+
+function resolvePrivateKey(credentials: HostConnectionValues) {
+  return credentials.authType === '密钥' && credentials.privateKey === PLATFORM_LINUX_SSH_KEY_REF ? getLinuxSshPrivateKey() : credentials.privateKey
 }
 
 function credentialSecret(credentials: HostConnectionValues) {
@@ -221,9 +237,59 @@ function credentialSecret(credentials: HostConnectionValues) {
 
 const INSTALL_TIMEOUT_MS = 180000
 const WINDOWS_INSTALL_TIMEOUT_MS = 180000
+const SELF_UPDATE_MIN_AGENT_VERSION = 'v2.10.8'
+const WINDOWS_SELF_UPDATE_MIN_AGENT_VERSION = 'v2.10.11'
+const AGENT_UPDATE_RUNNING_TIMEOUT_MS = Math.max(10 * 60 * 1000, Number(process.env.OPS_AGENT_UPDATE_RUNNING_TIMEOUT_MS || 10 * 60 * 1000))
 
 function transportName(os: Host['os']) {
   return os === 'Windows' ? 'WinRM' : 'SSH'
+}
+
+function parseAgentVersion(version: string) {
+  const match = version.match(/^v?(\d+)\.(\d+)\.(\d+)$/)
+  return match ? match.slice(1).map((part) => Number(part)) : undefined
+}
+
+function isAgentVersionAtLeast(version: string, minimum: string) {
+  const current = parseAgentVersion(version)
+  const target = parseAgentVersion(minimum)
+  if (!current || !target) return false
+  for (let index = 0; index < target.length; index += 1) {
+    if (current[index] > target[index]) return true
+    if (current[index] < target[index]) return false
+  }
+  return true
+}
+
+function agentUpdateTimeoutMinutes() {
+  return Math.ceil(AGENT_UPDATE_RUNNING_TIMEOUT_MS / 60000)
+}
+
+function installModeFor(values: AddHostFormValues, os: Host['os']) {
+  if (values.installMode === 'offline') {
+    if (os !== 'Windows') throw new Error('离线安装模式仅支持 Windows 主机')
+    return 'offline'
+  }
+  return 'remote'
+}
+
+function requireRemoteCredentials(values: AddHostFormValues | Partial<AddHostFormValues>, os: Host['os']): HostConnectionValues {
+  const sshUsername = values.sshUsername || (os === 'Linux' ? 'root' : undefined)
+  const authType = values.authType || (os === 'Linux' ? '密钥' : undefined)
+  const sshPort = values.sshPort || (os === 'Linux' ? 22 : undefined)
+  if (!sshUsername || !authType || !sshPort) throw new Error('请填写远程用户名、认证方式和端口')
+  if (os === 'Windows' && authType !== '密码') throw new Error('Windows WinRM 当前仅支持密码认证')
+  if (authType === '密码' && !values.password) throw new Error('请输入密码')
+  if (authType === '密钥' && os === 'Windows') throw new Error('Windows 当前请使用离线 Agent 安装，不再支持密钥远程纳管')
+  if (authType === '密钥' && os === 'Linux' && !values.privateKey) getLinuxSshPrivateKey()
+  if (authType === '密钥' && os !== 'Linux' && !values.privateKey) throw new Error('请输入 SSH 私钥')
+  return {
+    sshUsername,
+    authType,
+    password: values.password,
+    privateKey: authType === '密钥' ? (values.privateKey || PLATFORM_LINUX_SSH_KEY_REF) : undefined,
+    sshPort,
+  }
 }
 
 function buildInstallConnection(host: Host, credentials: HostConnectionValues): RemoteConnectionInput {
@@ -314,6 +380,32 @@ async function appendAudit(operator: string, action: Parameters<typeof createHos
   const chain = buildHostAuditHashChain([...existing.map(({ previousHash, hash, ...log }) => log), createHostAudit(operator, action, target, result, detail)])
   const next = chain[chain.length - 1]
   await prisma.hostAuditLog.create({ data: next })
+}
+
+function metadataObject(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function hostServiceAlertFingerprint(hostId: string, serviceName: string, port?: number | null) {
+  return `agent-service:${hostId}:${serviceName}:${port ?? 0}:abnormal`
+}
+
+function serviceControlJobType(action: ServiceControlAction): AgentJobType {
+  if (action === 'start') return 'start_service'
+  if (action === 'stop') return 'stop_service'
+  return 'restart_service'
+}
+
+function serviceControlAuditAction(action: ServiceControlAction): Parameters<typeof createHostAudit>[1] {
+  if (action === 'start') return '启动服务'
+  if (action === 'stop') return '停止服务'
+  return '重启服务'
+}
+
+function serviceControlText(action: ServiceControlAction) {
+  if (action === 'start') return '启动'
+  if (action === 'stop') return '停止'
+  return '重启'
 }
 
 async function createAgentJob(host: Host, type: AgentJobType, operator: string) {
@@ -505,17 +597,23 @@ export async function recordHostMetrics(hostId: string, values: { cpu: number; m
 
 export async function testHostConnection(values: Partial<AddHostFormValues>, operator: string) {
   const firstIp = values.ips?.split('\n').map((ip) => ip.trim()).filter(Boolean)[0]
-  if (!firstIp || !values.sshUsername || !values.authType || !values.sshPort) {
+  if (!firstIp) {
     return { success: false, hostname: '', os: values.os ?? 'Linux', message: '请填写主机 IP、用户名、认证方式和端口' }
   }
   const os = values.os ?? 'Linux'
+  let credentials: HostConnectionValues
+  try {
+    credentials = requireRemoteCredentials(values, os)
+  } catch (error) {
+    return { success: false, hostname: '', os, message: error instanceof Error ? error.message : '请填写主机 IP、用户名、认证方式和端口' }
+  }
   const result = await testRemoteConnection({
     host: firstIp,
-    port: values.sshPort,
-    username: values.sshUsername,
-    authType: values.authType,
-    password: values.password,
-    privateKey: values.privateKey,
+    port: credentials.sshPort,
+    username: credentials.sshUsername,
+    authType: credentials.authType,
+    password: credentials.password,
+    privateKey: resolvePrivateKey(credentials),
     os,
   })
   await appendAudit(operator, '测试连接', firstIp, result.success ? '成功' : '失败', result.summary)
@@ -532,9 +630,16 @@ export async function addHosts(values: AddHostFormValues, operator: string) {
   const ips = values.ips.split('\n').map((ip) => ip.trim()).filter(Boolean)
   const now = nowText()
   const createdHosts: Host[] = []
+  const repeatedIps = ips.filter((ip, index) => ips.indexOf(ip) !== index)
+  if (repeatedIps.length) throw new Error(`提交内容包含重复 IP：${Array.from(new Set(repeatedIps)).join('、')}`)
+  const existingHosts = await prisma.host.findMany({ where: { ip: { in: ips } }, select: { ip: true, hostname: true } })
+  if (existingHosts.length) throw new Error(`以下 IP 已存在，不能重复纳管：${existingHosts.map((host) => `${host.ip}(${host.hostname})`).join('、')}`)
 
   for (const [index, ip] of ips.entries()) {
     const os = values.os ?? 'Linux'
+    const installMode = installModeFor(values, os)
+    const credentials = installMode === 'remote' ? requireRemoteCredentials(values, os) : undefined
+    const sshPort = credentials?.sshPort ?? (os === 'Windows' ? 5985 : 22)
     const host = await prisma.host.create({
       data: {
         id: `host-${Date.now()}-${index}`,
@@ -547,30 +652,28 @@ export async function addHosts(values: AddHostFormValues, operator: string) {
         disk: 0,
         status: '纳管中',
         group: values.group,
-        marketType: normalizeMarketType(values.marketType),
         tags: values.tags ?? [],
         agentVersion: AGENT_VERSION,
         agentStatus: '安装中',
         agentInstalledAt: now,
         lastHeartbeat: now,
-        sshPort: values.sshPort,
-        owner: values.sshUsername,
+        sshPort,
+        owner: credentials?.sshUsername ?? '',
         changeNo: values.changeNo || '',
       },
     })
     const hostItem = toHost(host)!
-    await upsertPullCredential(hostItem, values)
-    await appendAudit(operator, '启用自动Pull', hostItem.hostname, '成功', `新增主机后已自动启用 30 秒 ${transportName(hostItem.os)} 自动 Pull 指标`)
-    try {
-      const installed = await runInstallJob(hostItem, values, operator, 'install_agent')
-      createdHosts.push(installed)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Agent 安装失败'
-      const updated = await prisma.host.update({ where: { id: hostItem.id }, data: { status: '纳管中', agentStatus: '异常', lastHeartbeat: nowText() } })
-      await recordFailedAgentJob(hostItem, 'install_agent', operator, `Agent 安装异常：${message}`, message)
-      await appendAudit(operator, '新增主机', hostItem.hostname, '失败', `主机已保存，但 Agent 安装失败：${message}`)
-      createdHosts.push(toHost(updated)!)
+    if (credentials) {
+      void runInstallJob(hostItem, credentials, operator, 'install_agent').catch(async (error) => {
+        const message = error instanceof Error ? error.message : 'Agent 安装失败'
+        await prisma.host.update({ where: { id: hostItem.id }, data: { status: '纳管中', agentStatus: '异常', lastHeartbeat: nowText() } }).catch(() => undefined)
+        await recordFailedAgentJob(hostItem, 'install_agent', operator, `Agent 安装异常：${message}`, message).catch(() => undefined)
+        await appendAudit(operator, '新增主机', hostItem.hostname, '失败', `主机已保存，但 Agent 安装失败：${message}`).catch(() => undefined)
+      })
+    } else {
+      await appendAudit(operator, '新增主机', hostItem.hostname, '成功', 'Windows 主机已保存为离线 Agent 安装模式，未保存 WinRM 密码；请下载离线安装脚本并在目标主机以管理员身份执行')
     }
+    createdHosts.push((await getHost(host.id)) ?? hostItem)
   }
 
   return createdHosts
@@ -587,7 +690,6 @@ export async function updateHost(id: string, values: EditHostValues, operator: s
       osVersion: values.osVersion,
       sshPort: values.sshPort,
       group: values.group,
-      marketType: normalizeMarketType(values.marketType),
       tags: values.tags,
     },
   })
@@ -747,6 +849,49 @@ export async function repairAgentBackendRoutes(id: string, credentials: HostConn
   return { candidates: diagnosis.candidates, recommendedUrl }
 }
 
+export async function createWindowsOfflineAgentPackage(id: string, operator: string, overrides: AgentInstallOverrides = {}) {
+  const current = await getHost(id)
+  if (!current) return undefined
+  if (current.os !== 'Windows') throw new Error('离线 Agent 安装脚本仅支持 Windows 主机')
+
+  const apiBaseUrl = overrides.apiBaseUrl ? normalizeAgentBaseUrl(overrides.apiBaseUrl) : agentPublicUrl()
+  const installerToken = signOfflineAgentInstallerToken({ hostId: current.id, hostIp: current.ip, apiBaseUrl })
+  const installer = buildWindowsOfflineAgentInstaller(current.ip, {
+    hostId: current.id,
+    installerToken,
+    apiBaseUrl,
+    intervalSeconds: agentIntervalSeconds(),
+  })
+  await appendAudit(operator, '生成离线Agent包', current.hostname, '成功', `已生成 Windows 离线 Agent 安装脚本；下载本身不会轮换现有 Agent Token，脚本执行时才会登记`)
+  return installer
+}
+
+export async function enrollWindowsOfflineAgent(id: string, installerToken: string) {
+  const payload = verifyOfflineAgentInstallerToken(installerToken)
+  if (payload.hostId !== id) throw new Error('离线 Agent 安装令牌与主机不匹配')
+
+  const current = await getHost(id)
+  if (!current) return undefined
+  if (current.os !== 'Windows') throw new Error('离线 Agent 安装仅支持 Windows 主机')
+  if (current.ip !== payload.hostIp) throw new Error('离线 Agent 安装令牌与主机 IP 不匹配')
+
+  const token = generateAgentToken()
+  const now = nowText()
+  const updated = await prisma.host.update({
+    where: { id },
+    data: {
+      status: '纳管中',
+      agentStatus: '安装中',
+      agentVersion: AGENT_VERSION,
+      lastHeartbeat: now,
+      agentTokenHash: hashAgentToken(token),
+      agentTokenVersion: { increment: 1 },
+    },
+  })
+  await appendAudit('Windows离线安装脚本', '生成离线Agent包', updated.hostname, '成功', '目标主机已执行离线安装脚本并登记 Agent Token')
+  return { agentToken: token }
+}
+
 export async function reinstallAgent(id: string, credentials: HostConnectionValues, operator: string, overrides: AgentInstallOverrides = {}) {
   const current = await getHost(id)
   if (!current) return undefined
@@ -781,16 +926,125 @@ export async function restartAgent(id: string, credentials: HostConnectionValues
   return toHost(updated)
 }
 
-async function controlHostService(id: string, serviceId: string, credentials: HostConnectionValues, operator: string, action: 'start' | 'stop') {
+export async function recoverStaleAgentUpdateJobs(hostIds?: string[], now = new Date()) {
+  const normalizedHostIds = hostIds?.filter(Boolean)
+  const cutoff = new Date(now.getTime() - AGENT_UPDATE_RUNNING_TIMEOUT_MS)
+  const staleJobs = await prisma.hostAgentJob.findMany({
+    where: {
+      hostId: normalizedHostIds?.length ? { in: normalizedHostIds } : undefined,
+      type: 'update_agent',
+      status: 'running',
+      updatedAt: { lt: cutoff },
+    },
+    select: { id: true, hostId: true, updatedAt: true },
+  })
+  if (!staleJobs.length) return []
+
+  const minutes = agentUpdateTimeoutMinutes()
+  await prisma.hostAgentJob.updateMany({
+    where: { id: { in: staleJobs.map((job) => job.id) }, status: 'running' },
+    data: {
+      status: 'failed',
+      completedAt: now,
+      summary: `Agent 更新超时，旧 Agent 未回传结果（超过 ${minutes} 分钟）`,
+      stderr: `Agent update job timed out after ${minutes} minutes without result callback.`,
+    },
+  })
+  return staleJobs
+}
+
+export async function queueAgentUpdateJobs(values: { hostIds?: string[]; os?: 'Linux' | 'Windows'; onlyOutdated?: boolean }, operator: string) {
+  const hostIds = values.hostIds?.filter(Boolean)
+  const onlyOutdated = values.onlyOutdated !== false
+  const hosts = await prisma.host.findMany({
+    where: {
+      id: hostIds?.length ? { in: hostIds } : undefined,
+      os: values.os,
+    },
+    select: { id: true, ip: true, hostname: true, os: true, status: true, agentStatus: true, agentVersion: true, agentTokenHash: true },
+    orderBy: { ip: 'asc' },
+  })
+  if (hosts.length > 0) await recoverStaleAgentUpdateJobs(hosts.map((host) => host.id))
+  const existingJobs = await prisma.hostAgentJob.findMany({
+    where: { hostId: { in: hosts.map((host) => host.id) }, type: 'update_agent', status: { in: ['pending', 'running'] } },
+    select: { hostId: true },
+  })
+  const busyHostIds = new Set(existingJobs.map((job) => job.hostId))
+  const queued: Array<{ hostId: string; ip: string; hostname: string; version: string }> = []
+  const skipped: Array<{ hostId: string; ip: string; hostname: string; reason: string }> = []
+
+  for (const host of hosts) {
+    if (!host.agentTokenHash) {
+      skipped.push({ hostId: host.id, ip: host.ip, hostname: host.hostname, reason: 'Agent Token 不存在，需要先安装 Agent' })
+      continue
+    }
+    if (host.status !== '在线' || host.agentStatus !== '正常') {
+      skipped.push({ hostId: host.id, ip: host.ip, hostname: host.hostname, reason: '主机或 Agent 未在线' })
+      continue
+    }
+    if (onlyOutdated && host.agentVersion === AGENT_VERSION) {
+      skipped.push({ hostId: host.id, ip: host.ip, hostname: host.hostname, reason: `已是当前版本 ${AGENT_VERSION}` })
+      continue
+    }
+    const minimumVersion = host.os === 'Windows' ? WINDOWS_SELF_UPDATE_MIN_AGENT_VERSION : SELF_UPDATE_MIN_AGENT_VERSION
+    if (!isAgentVersionAtLeast(host.agentVersion, minimumVersion)) {
+      skipped.push({ hostId: host.id, ip: host.ip, hostname: host.hostname, reason: `当前 Agent ${host.agentVersion || '-'} 不支持可靠自更新，需要先手动/离线升级到 ${minimumVersion}` })
+      continue
+    }
+    if (busyHostIds.has(host.id)) {
+      skipped.push({ hostId: host.id, ip: host.ip, hostname: host.hostname, reason: '已有更新任务在队列中' })
+      continue
+    }
+    await prisma.hostAgentJob.create({
+      data: {
+        id: `agent-job-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        hostId: host.id,
+        type: 'update_agent',
+        transport: 'agent',
+        status: 'pending',
+        operator,
+        summary: `等待 Agent 自更新到 ${AGENT_VERSION}`,
+        stdout: JSON.stringify({ targetVersion: AGENT_VERSION }),
+      },
+    })
+    await appendAudit(operator, '更新Agent', host.hostname, '成功', `已下发 Agent 自更新任务：${host.agentVersion || '-'} -> ${AGENT_VERSION}`)
+    queued.push({ hostId: host.id, ip: host.ip, hostname: host.hostname, version: host.agentVersion })
+  }
+
+  return { targetVersion: AGENT_VERSION, queued, skipped }
+}
+
+async function queueWindowsAgentServiceControl(current: Host, service: { id: string; name: string }, operator: string, action: ServiceControlAction) {
+  await prisma.hostAgentJob.create({
+    data: {
+      id: `agent-job-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      hostId: current.id,
+      type: serviceControlJobType(action),
+      transport: 'agent',
+      status: 'pending',
+      operator,
+      summary: `等待 Windows Agent ${serviceControlText(action)}服务：${service.name}`,
+      stdout: JSON.stringify({ action, serviceId: service.id, serviceName: service.name }),
+    },
+  })
+  await appendAudit(operator, serviceControlAuditAction(action), current.hostname, '成功', `已下发 Windows Agent ${serviceControlText(action)}服务任务：${service.name}`)
+}
+
+async function controlHostService(id: string, serviceId: string, credentials: Partial<HostConnectionValues> | undefined, operator: string, action: ServiceControlAction) {
   const current = await getHost(id)
   if (!current) return undefined
-  assertSupportedCredential(current, credentials)
   const service = await prisma.hostService.findFirst({ where: { id: serviceId, hostId: id } })
   if (!service) throw new Error('服务记录不存在')
+  if (current.os === 'Windows') {
+    await queueWindowsAgentServiceControl(current, service, operator, action)
+    return getHost(id)
+  }
+  if (!credentials) throw new Error('请填写远程用户名、认证方式和端口')
+  assertSupportedCredential(current, credentials as HostConnectionValues)
   await executeHostServiceControl({
     host: current,
     service,
-    connection: buildConnection(current, credentials),
+    connection: buildConnection(current, credentials as HostConnectionValues),
     operator,
     action,
     source: 'ops-platform',
@@ -798,12 +1052,16 @@ async function controlHostService(id: string, serviceId: string, credentials: Ho
   return getHost(id)
 }
 
-export async function startHostService(id: string, serviceId: string, credentials: HostConnectionValues, operator: string) {
+export async function startHostService(id: string, serviceId: string, credentials: Partial<HostConnectionValues> | undefined, operator: string) {
   return controlHostService(id, serviceId, credentials, operator, 'start')
 }
 
-export async function stopHostService(id: string, serviceId: string, credentials: HostConnectionValues, operator: string) {
+export async function stopHostService(id: string, serviceId: string, credentials: Partial<HostConnectionValues> | undefined, operator: string) {
   return controlHostService(id, serviceId, credentials, operator, 'stop')
+}
+
+export async function restartHostService(id: string, serviceId: string, credentials: Partial<HostConnectionValues> | undefined, operator: string) {
+  return controlHostService(id, serviceId, credentials, operator, 'restart')
 }
 
 export async function deleteHostServiceRecord(id: string, serviceId: string, operator: string) {
@@ -813,5 +1071,30 @@ export async function deleteHostServiceRecord(id: string, serviceId: string, ope
   if (!service) throw new Error('服务记录不存在')
   await prisma.hostService.delete({ where: { id: service.id } })
   await appendAudit(operator, '删除服务记录', current.hostname, '成功', `仅删除平台服务记录：${service.name}，不会删除主机上的真实服务`)
+  return getHost(id)
+}
+
+export async function ignoreHostServiceRecord(id: string, serviceId: string, operator: string) {
+  const current = await getHost(id)
+  if (!current) return undefined
+  const service = await prisma.hostService.findFirst({ where: { id: serviceId, hostId: id } })
+  if (!service) throw new Error('服务记录不存在')
+  await prisma.hostService.update({
+    where: { id: service.id },
+    data: {
+      metadata: {
+        ...metadataObject(service.metadata),
+        ignored: true,
+        ignoredBy: operator,
+        ignoredAt: new Date().toISOString(),
+      } as Prisma.InputJsonValue,
+    },
+  })
+  const alert = await prisma.alert.findFirst({
+    where: { fingerprint: hostServiceAlertFingerprint(id, service.name, service.port), status: { not: '已解决' } },
+    orderBy: { updatedAt: 'desc' },
+  })
+  if (alert) await resolveAlert(alert.id, 'Agent服务监控')
+  await appendAudit(operator, '忽略服务', current.hostname, '成功', `已忽略平台服务记录：${service.name}；后续 Agent 上报同名服务不会展示或触发服务告警`)
   return getHost(id)
 }

@@ -9,6 +9,7 @@ const DEFAULT_LOG_RETENTION_DAYS = 2
 const DAY_MS = 24 * 60 * 60 * 1000
 const MAX_FUTURE_LOG_MS = 5 * 60 * 1000
 const DEFAULT_QUERY_WINDOW_MS = 60 * 60 * 1000
+const HOST_FILE_QUERY_WINDOW_MS = 24 * 60 * 60 * 1000
 
 function toLog(log: LogRow): AppLog {
   return {
@@ -114,6 +115,12 @@ function sourceWhere(source: string | undefined, date = new Date()): Prisma.AppL
   return { source: value }
 }
 
+function defaultQueryWindowMs(filters: LogFilters) {
+  if (filters.startTime) return undefined
+  if (filters.hostId || filters.source) return HOST_FILE_QUERY_WINDOW_MS
+  return DEFAULT_QUERY_WINDOW_MS
+}
+
 export async function cleanupOldAppLogs(now = new Date()) {
   return prisma.appLog.deleteMany({ where: { timestamp: { lt: logRetentionCutoffUtc(now) } } })
 }
@@ -125,6 +132,7 @@ export async function queryLogs(filters: LogFilters) {
   const serviceFilter = filters.service?.startsWith('container:') ? { contains: filters.service, mode: 'insensitive' as const } : filters.service
   const clauses: Prisma.AppLogWhereInput[] = []
   const sourceFilter = sourceWhere(filters.source)
+  const defaultWindowMs = defaultQueryWindowMs(filters)
   if (sourceFilter) clauses.push(sourceFilter)
   if (keyword) clauses.push({ OR: [{ traceId: { contains: keyword, mode: 'insensitive' } }, { message: { contains: keyword, mode: 'insensitive' } }, { service: { contains: keyword, mode: 'insensitive' } }] })
   const now = new Date()
@@ -133,7 +141,7 @@ export async function queryLogs(filters: LogFilters) {
     level: filters.level,
     hostId: filters.hostId,
     timestamp: {
-      gte: filters.startTime ? new Date(filters.startTime) : new Date(Math.max(logRetentionCutoffUtc(now).getTime(), now.getTime() - DEFAULT_QUERY_WINDOW_MS)),
+      gte: filters.startTime ? new Date(filters.startTime) : new Date(Math.max(logRetentionCutoffUtc(now).getTime(), now.getTime() - (defaultWindowMs ?? DEFAULT_QUERY_WINDOW_MS))),
       lte: filters.endTime ? new Date(filters.endTime) : undefined,
     },
     AND: clauses.length ? clauses : undefined,

@@ -13,6 +13,11 @@ const businessErrors = [
   '日志监控规则至少需要一个关键字',
   'xm2 monitor.json 不是有效 JSON',
   'xm2 JSON 必须是数组，或包含 data/rules/items 数组',
+  '请填写远程用户名、认证方式和端口',
+  'Windows WinRM 当前仅支持密码认证',
+  'Windows 当前请使用离线 Agent 安装，不再支持密钥远程纳管',
+  '请输入密码',
+  '请输入 SSH 私钥',
 ]
 
 export function errorHandler(error: unknown, req: Request, res: Response, _next: NextFunction) {

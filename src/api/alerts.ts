@@ -1,9 +1,9 @@
-import type { AlertDiagnosisResult, AlertFilters, AlertItem, AlertNoiseStats, AlertSummary, CreateAlertInput, CreateAlertResult, SuppressAlertInput, SuppressedAlertRecord } from '../types/alert'
+import type { AlertDiagnosisResult, AlertFilters, AlertItem, AlertNoiseStats, AlertPage, AlertSummary, CreateAlertInput, CreateAlertResult, SuppressAlertInput, SuppressedAlertRecord } from '../types/alert'
 import { http } from './http'
 
-export async function queryAlerts(filters: AlertFilters = {}): Promise<AlertItem[]> {
-  const response = await http.get<{ data: AlertItem[] }>('/alerts', { params: filters })
-  return response.data.data
+export async function queryAlerts(filters: AlertFilters = {}): Promise<AlertPage> {
+  const response = await http.get<AlertPage>('/alerts', { params: filters })
+  return response.data
 }
 
 export async function createAlert(input: CreateAlertInput): Promise<CreateAlertResult> {

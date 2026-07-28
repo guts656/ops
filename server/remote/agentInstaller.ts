@@ -2,7 +2,7 @@ import type { AgentBackendCandidateResult, AgentInstallOptions, AgentOperationRe
 import { runSshCommand, testSshConnection } from './ssh.ts'
 import { runWinrmCommand, testWinrmConnection, uploadWinrmFile } from './winrm.ts'
 
-export const AGENT_VERSION = 'v2.10.6'
+export const AGENT_VERSION = 'v2.10.12'
 
 function toOperationResult(result: RemoteCommandResult): AgentOperationResult {
   return { ...result, status: result.success ? 'success' : 'failed' }
@@ -33,6 +33,7 @@ chown root:root /opt/ops-platform-agent/agent.env
 chmod 600 /opt/ops-platform-agent/agent.env
 cat >/usr/local/bin/ops-platform-agent <<'PY'
 #!/usr/bin/env python3
+# OPS_AGENT_SELF_UPDATE_MARKER
 import hashlib
 import json
 import os
@@ -134,6 +135,66 @@ def get_json(path):
     except Exception:
         return {}
 
+def update_agent_version(target_version):
+    info_path = BASE / 'agent-info.json'
+    info = {}
+    if info_path.exists():
+        try:
+            info = json.loads(info_path.read_text())
+        except Exception:
+            info = {}
+    info['version'] = target_version
+    info['hostId'] = HOST_ID
+    info_path.write_text(json.dumps(info, ensure_ascii=False), encoding='utf-8')
+    os.chmod(info_path, 0o600)
+    lines = []
+    seen_version = False
+    for line in ENV_FILE.read_text().splitlines():
+        if line.startswith('AGENT_VERSION='):
+            lines.append('AGENT_VERSION=' + target_version)
+            seen_version = True
+        else:
+            lines.append(line)
+    if not seen_version:
+        lines.append('AGENT_VERSION=' + target_version)
+    ENV_FILE.write_text('\\n'.join(lines) + '\\n', encoding='utf-8')
+    os.chmod(ENV_FILE, 0o600)
+
+def perform_update_job(job):
+    job_id = str(job.get('id') or '')
+    target_version = str(job.get('targetVersion') or '')
+    try:
+        package = get_json('/api/agent/hosts/' + HOST_ID + '/update-package?os=Linux')
+        script = package.get('script') or ''
+        target_version = str(package.get('version') or target_version)
+        if not target_version:
+            raise RuntimeError('missing target version')
+        if 'OPS_AGENT_SELF_UPDATE_MARKER' not in script:
+            raise RuntimeError('update package validation failed')
+        new_path = Path('/usr/local/bin/ops-platform-agent.new')
+        new_path.write_text(script, encoding='utf-8')
+        os.chmod(new_path, 0o755)
+        check = subprocess.run([sys.executable, '-m', 'py_compile', str(new_path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        if check.returncode != 0:
+            raise RuntimeError(check.stderr or check.stdout or 'python syntax validation failed')
+        os.replace(str(new_path), '/usr/local/bin/ops-platform-agent')
+        update_agent_version(target_version)
+        post('/api/agent/hosts/' + HOST_ID + '/jobs/' + job_id + '/result', {'success': True, 'version': target_version, 'summary': 'Agent updated to ' + target_version, 'stdout': 'script=/usr/local/bin/ops-platform-agent'})
+        subprocess.Popen(['sh', '-c', 'sleep 2; systemctl restart ops-platform-agent >/dev/null 2>&1'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception as exc:
+        post('/api/agent/hosts/' + HOST_ID + '/jobs/' + job_id + '/result', {'success': False, 'version': target_version, 'summary': 'Agent update failed: ' + str(exc), 'stderr': str(exc)})
+        return False
+
+def process_agent_jobs():
+    for _index in range(3):
+        response = get_json('/api/agent/hosts/' + HOST_ID + '/jobs/next')
+        job = response.get('job') if isinstance(response, dict) else None
+        if not job:
+            return
+        if job.get('type') == 'update_agent':
+            perform_update_job(job)
+
 def run(command):
     return subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False).stdout
 
@@ -172,6 +233,85 @@ def parse_bytes(value):
     unit = (match.group(2) or 'B').lower()
     multipliers = {'b': 1, 'kb': 1000, 'kib': 1024, 'mb': 1000 ** 2, 'mib': 1024 ** 2, 'gb': 1000 ** 3, 'gib': 1024 ** 3, 'tb': 1000 ** 4, 'tib': 1024 ** 4}
     return int(number * multipliers.get(unit, 1))
+
+def clamp_percent(value):
+    try:
+        return max(0, min(100, int(round(float(value)))))
+    except Exception:
+        return 0
+
+def read_cpu_times():
+    try:
+        fields = Path('/proc/stat').read_text().splitlines()[0].split()[1:]
+        values = [int(value) for value in fields]
+        idle = values[3] + (values[4] if len(values) > 4 else 0)
+        return sum(values), idle
+    except Exception:
+        return 0, 0
+
+def collect_cpu_percent():
+    total1, idle1 = read_cpu_times()
+    time.sleep(1)
+    total2, idle2 = read_cpu_times()
+    total_delta = total2 - total1
+    idle_delta = idle2 - idle1
+    if total_delta <= 0:
+        return 0
+    return clamp_percent(((total_delta - idle_delta) / total_delta) * 100)
+
+def collect_memory_percent():
+    values = {}
+    try:
+        for line in Path('/proc/meminfo').read_text().splitlines():
+            if ':' not in line:
+                continue
+            key, raw = line.split(':', 1)
+            number = re.search(r'\\d+', raw)
+            if number:
+                values[key] = int(number.group(0))
+    except Exception:
+        return 0
+    total = values.get('MemTotal') or 0
+    available = values.get('MemAvailable')
+    if available is None:
+        available = (values.get('MemFree') or 0) + (values.get('Buffers') or 0) + (values.get('Cached') or 0)
+    if total <= 0:
+        return 0
+    return clamp_percent(((total - available) / total) * 100)
+
+def collect_disk_percent():
+    try:
+        usage = shutil.disk_usage('/')
+        if usage.total <= 0:
+            return 0
+        return clamp_percent((usage.used / usage.total) * 100)
+    except Exception:
+        return 0
+
+def collect_os_version():
+    release = Path('/etc/os-release')
+    if release.exists():
+        for line in release.read_text(errors='replace').splitlines():
+            if line.startswith('PRETTY_NAME='):
+                return line.split('=', 1)[1].strip().strip('"')
+    return run(['uname', '-sr']).strip() or 'Linux'
+
+def collect_uptime_seconds():
+    try:
+        return int(float(Path('/proc/uptime').read_text().split()[0]))
+    except Exception:
+        return 0
+
+def collect_metrics():
+    return {
+        'cpu': collect_cpu_percent(),
+        'memory': collect_memory_percent(),
+        'disk': collect_disk_percent(),
+        'hostname': os.uname().nodename,
+        'osVersion': collect_os_version(),
+        'uptimeSeconds': collect_uptime_seconds(),
+        'sampledAt': now_iso(),
+    }
 
 def split_pair(value):
     parts = [part.strip() for part in str(value or '').split('/')]
@@ -352,6 +492,11 @@ def discover_containers():
 def collect_once():
     state = load_state()
     try:
+        process_agent_jobs()
+        try:
+            post('/api/agent/hosts/' + HOST_ID + '/metrics', collect_metrics())
+        except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
+            print('metrics upload failed: ' + str(exc), file=sys.stderr)
         containers = discover_containers()
         if containers:
             post('/api/agent/hosts/' + HOST_ID + '/containers', {'containers': containers})
@@ -496,6 +641,13 @@ function Get-OpsWmi($className) {
   if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) { return Get-CimInstance $className }
   return Get-WmiObject $className
 }
+function Get-UptimeSeconds($os) {
+  try {
+    $bootTime = $os.LastBootUpTime
+    if ($bootTime) { return [math]::Max(0, [int]((Get-Date) - ([System.Management.ManagementDateTimeConverter]::ToDateTime($bootTime))).TotalSeconds) }
+  } catch {}
+  return 0
+}
 $cpuSamples = Get-OpsWmi 'Win32_Processor' | Where-Object { $null -ne $_.LoadPercentage }
 $cpu = if ($cpuSamples) { [math]::Round(($cpuSamples | Measure-Object -Property LoadPercentage -Average).Average) } else { 0 }
 $os = Get-OpsWmi 'Win32_OperatingSystem' | Select-Object -First 1
@@ -505,8 +657,7 @@ $memory = if ($totalMemory -gt 0) { [math]::Round((($totalMemory - $freeMemory) 
 $systemDrive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
 $diskInfo = Get-OpsWmi 'Win32_LogicalDisk' | Where-Object { $_.DeviceID -eq $systemDrive } | Select-Object -First 1
 $disk = if ($diskInfo -and $diskInfo.Size -gt 0) { [math]::Round((($diskInfo.Size - $diskInfo.FreeSpace) / $diskInfo.Size) * 100) } else { 0 }
-$bootTime = $os.LastBootUpTime
-$uptime = if ($bootTime) { [math]::Max(0, [int]((Get-Date) - ([System.Management.ManagementDateTimeConverter]::ToDateTime($bootTime))).TotalSeconds) } else { 0 }
+$uptime = Get-UptimeSeconds $os
 Write-Output "CPU=$cpu"
 Write-Output "MEMORY=$memory"
 Write-Output "DISK=$disk"
@@ -531,6 +682,79 @@ function parseMetricsOutput(result: RemoteCommandResult): RemoteMetricsResult {
   }
 }
 
+const windowsAgentUpdaterTemplate = `$ErrorActionPreference = 'Continue'
+$base = '__BASE__'
+$tempPath = '__TEMP_PATH__'
+$scriptPath = '__SCRIPT_PATH__'
+$configPath = '__CONFIG_PATH__'
+$targetVersion = '__TARGET_VERSION__'
+$hostId = '__HOST_ID__'
+$agentToken = '__AGENT_TOKEN__'
+$apiBaseUrl = '__API_BASE_URL__'
+$jobId = '__JOB_ID__'
+function Escape-JsonString($value) {
+  if ($null -eq $value) { return '' }
+  return ([string]$value).Replace('\\\\', '\\\\\\\\').Replace('"', '\\\\"').Replace([string][char]13, '\\\\r').Replace([string][char]10, '\\\\n')
+}
+function JsonPair($name, $value) {
+  return '"' + (Escape-JsonString $name) + '":"' + (Escape-JsonString $value) + '"'
+}
+function Post-UpdateResult($success, $summary, $stdout, $stderr) {
+  $successText = ([string]$success).ToLowerInvariant()
+  $body = '{' + ((@(
+    (JsonPair 'success' $successText),
+    (JsonPair 'summary' $summary),
+    (JsonPair 'stdout' $stdout),
+    (JsonPair 'stderr' $stderr),
+    (JsonPair 'version' $targetVersion)
+  )) -join ',') + '}'
+  $body = $body.Replace('"success":"true"', '"success":true').Replace('"success":"false"', '"success":false')
+  $request = [System.Net.HttpWebRequest]::Create("$apiBaseUrl/api/agent/hosts/$hostId/jobs/$jobId/result")
+  $request.Method = 'POST'
+  $request.Timeout = 10000
+  $request.ReadWriteTimeout = 10000
+  $request.KeepAlive = $false
+  $request.Proxy = $null
+  $request.Headers.Set('Authorization', "Bearer $agentToken")
+  $request.ContentType = 'application/json; charset=utf-8'
+  $bytes = [Text.Encoding]::UTF8.GetBytes($body)
+  $request.ContentLength = $bytes.Length
+  $stream = $request.GetRequestStream()
+  try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Close() }
+  $response = $request.GetResponse()
+  try {} finally { $response.Close() }
+}
+try {
+  Start-Sleep -Seconds 5
+  $moved = $false
+  for ($attempt = 1; $attempt -le 30; $attempt += 1) {
+    try {
+      Move-Item -LiteralPath $tempPath -Destination $scriptPath -Force
+      $moved = $true
+      break
+    } catch {
+      if ($attempt -eq 30) { throw }
+      Start-Sleep -Seconds 2
+    }
+  }
+  if (-not $moved) { throw 'update script was not moved' }
+  $configRaw = [System.IO.File]::ReadAllText($configPath, [Text.Encoding]::UTF8)
+  $escapedVersion = Escape-JsonString $targetVersion
+  $configRaw = [regex]::Replace($configRaw, '"agentVersion"\\s*:\\s*"[^"]*"', '"agentVersion":"' + $escapedVersion + '"')
+  [System.IO.File]::WriteAllText($configPath, $configRaw, [Text.Encoding]::UTF8)
+  $info = '{"version":"' + $escapedVersion + '","hostId":"' + (Escape-JsonString $hostId) + '","installedBy":"ops-platform-self-update"}'
+  [System.IO.File]::WriteAllText((Join-Path $base 'agent-info.json'), $info, [Text.Encoding]::UTF8)
+  $selfPath = $MyInvocation.MyCommand.Path
+  Post-UpdateResult $true "Agent updated to $targetVersion" "script=$scriptPath; updater=$selfPath" ''
+  try { schtasks /Run /TN OpsPlatformAgent | Out-Null } catch {}
+} catch {
+  try { Post-UpdateResult $false "Agent update failed: $($_.Exception.Message)" '' ([string]$_.Exception.Message) } catch {}
+} finally {
+  Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+}
+`
+
 function windowsInstallScript(hostIp: string, options: AgentInstallOptions) {
   const info = JSON.stringify({ version: AGENT_VERSION, hostIp, hostId: options.hostId, installedBy: 'ops-platform' })
   const config = JSON.stringify({ hostId: options.hostId, agentVersion: AGENT_VERSION, agentToken: options.agentToken, apiBaseUrl: options.apiBaseUrl.replace(/\/$/, ''), intervalSeconds: options.intervalSeconds })
@@ -539,8 +763,9 @@ function windowsInstallScript(hostIp: string, options: AgentInstallOptions) {
     New-Item -ItemType Directory -Force -Path $base | Out-Null
     ${psSingle(info)} | Set-Content -Encoding UTF8 -Path (Join-Path $base 'agent-info.json')
     ${psSingle(config)} | Set-Content -Encoding UTF8 -Path (Join-Path $base 'agent-config.json')
-    @'
+@'
 $ErrorActionPreference = 'Continue'
+# OPS_AGENT_SELF_UPDATE_MARKER
 $base = 'C:/ProgramData/OpsPlatformAgent'
 $configPath = Join-Path $base 'agent-config.json'
 $statePath = Join-Path $base 'state.json'
@@ -602,7 +827,7 @@ function Read-SimpleJsonValue($raw, $name) {
 function ConvertFrom-SimpleJson($text) {
   $object = New-Object PSObject
   $raw = [string]$text
-  foreach ($name in @('hostId', 'agentVersion', 'agentToken', 'apiBaseUrl', 'intervalSeconds', 'paths')) {
+  foreach ($name in @('hostId', 'agentVersion', 'agentToken', 'apiBaseUrl', 'intervalSeconds', 'paths', 'version', 'scriptBase64', 'targetVersion', 'type', 'id', 'mode', 'rulesText')) {
     $value = Read-SimpleJsonValue $raw $name
     if ($null -ne $value) { $object | Add-Member -MemberType NoteProperty -Name $name -Value $value -Force }
   }
@@ -721,6 +946,20 @@ function Is-Blank($value) {
   if ($null -eq $value) { return $true }
   return ([string]$value).Trim().Length -eq 0
 }
+function Get-StateInt64($container, $key, $defaultValue) {
+  if ((Is-Blank $key) -or -not (Is-ObjectState $container)) { return [int64]$defaultValue }
+  try {
+    $property = $container.PSObject.Properties[[string]$key]
+    if ($property) { return [int64]$property.Value }
+  } catch {}
+  return [int64]$defaultValue
+}
+function Set-StateInt64($container, $key, $value) {
+  if ((Is-Blank $key) -or -not (Is-ObjectState $container)) { return }
+  try {
+    $container | Add-Member -MemberType NoteProperty -Name ([string]$key) -Value ([int64]$value) -Force
+  } catch {}
+}
 function Get-Sha1Hex($text) {
   $sha1 = [System.Security.Cryptography.SHA1]::Create()
   $bytes = [Text.Encoding]::UTF8.GetBytes([string]$text)
@@ -751,52 +990,56 @@ function Invoke-OpsHttp($method, $path, $bodyText) {
 function Post-Json($path, $payload) {
   Invoke-OpsHttp 'POST' $path (ConvertTo-OpsJson $payload) | Out-Null
 }
-function Get-LogField($item, $name) {
-  if ($item -is [System.Collections.IDictionary]) { return $item[$name] }
-  $property = $item.PSObject.Properties[$name]
-  if ($property) { return $property.Value }
-  return $null
-}
-function Set-LogField($item, $name, $value) {
-  if ($item -is [System.Collections.IDictionary]) {
-    $item[$name] = $value
-  } else {
-    $item | Add-Member -MemberType NoteProperty -Name $name -Value $value -Force
-  }
-  return $item
-}
-function Normalize-LogItem($item) {
-  if ($null -eq $item) { return $null }
-  $message = Compact-Text (Get-LogField $item 'message') 2000
-  if (Is-Blank $message) { return $null }
-  $service = [string](Get-LogField $item 'service')
-  if (Is-Blank $service) {
-    $sourceText = [string](Get-LogField $item 'source')
-    if (-not (Is-Blank $sourceText)) {
-      try { $service = [System.IO.Path]::GetFileNameWithoutExtension($sourceText) } catch {}
-    }
-    if (Is-Blank $service) { $service = 'agent' }
-  }
-  $level = [string](Get-LogField $item 'level')
-  if (@('ERROR', 'WARN', 'INFO', 'DEBUG') -notcontains $level) { $level = 'INFO' }
-  $item = Set-LogField $item 'service' (Compact-Text $service 200)
-  $item = Set-LogField $item 'level' $level
-  return Set-LogField $item 'message' $message
-}
-function Post-LogBatches($logs) {
-  $items = @($logs | ForEach-Object { Normalize-LogItem $_ } | Where-Object { $null -ne $_ })
-  if ($items.Count -le 0) { return }
-  for ($index = 0; $index -lt $items.Count; $index += 100) {
-    $end = [Math]::Min($index + 99, $items.Count - 1)
-    Post-Json "/api/agent/hosts/$($config.hostId)/logs" @{ logs = @($items[$index..$end]) }
-  }
-}
 function Get-Json($path) {
   try { return ConvertFrom-OpsJson (Invoke-OpsHttp 'GET' $path $null) } catch { return $null }
+}
+function New-LogCollectionStatus {
+  $status = New-Object PSObject
+  $status | Add-Member -MemberType NoteProperty -Name collector -Value 'ops-agent-powershell' -Force
+  $status | Add-Member -MemberType NoteProperty -Name status -Value 'ok' -Force
+  $status | Add-Member -MemberType NoteProperty -Name sampledAt -Value (NowIso) -Force
+  $status | Add-Member -MemberType NoteProperty -Name configPaths -Value @() -Force
+  $status | Add-Member -MemberType NoteProperty -Name matchedFiles -Value 0 -Force
+  $status | Add-Member -MemberType NoteProperty -Name readLines -Value 0 -Force
+  $status | Add-Member -MemberType NoteProperty -Name uploadedLines -Value 0 -Force
+  $status | Add-Member -MemberType NoteProperty -Name eventLogs -Value 0 -Force
+  $status | Add-Member -MemberType NoteProperty -Name lastError -Value '' -Force
+  $status | Add-Member -MemberType NoteProperty -Name paths -Value @() -Force
+  return $status
+}
+function Set-LogCollectionError($status, $message) {
+  if (-not $status) { return }
+  $text = Compact-Text $message 1000
+  $status.status = 'error'
+  $status.lastError = $text
+}
+function New-PathCollectionStatus($pathValue, $expandedPath, $exists, $matchedFiles, $readLines, $uploadedLines, $errorText, $files) {
+  $item = New-Object PSObject
+  $item | Add-Member -MemberType NoteProperty -Name path -Value ([string]$pathValue) -Force
+  $item | Add-Member -MemberType NoteProperty -Name expandedPath -Value ([string]$expandedPath) -Force
+  $item | Add-Member -MemberType NoteProperty -Name exists -Value ([bool]$exists) -Force
+  $item | Add-Member -MemberType NoteProperty -Name matchedFiles -Value ([int]$matchedFiles) -Force
+  $item | Add-Member -MemberType NoteProperty -Name readLines -Value ([int]$readLines) -Force
+  $item | Add-Member -MemberType NoteProperty -Name uploadedLines -Value ([int]$uploadedLines) -Force
+  $item | Add-Member -MemberType NoteProperty -Name error -Value ([string]$errorText) -Force
+  $item | Add-Member -MemberType NoteProperty -Name files -Value @($files) -Force
+  return $item
+}
+function Post-LogCollectionStatus($status) {
+  if (-not $status) { return }
+  if ($status.status -eq 'ok' -and $status.configPaths.Count -gt 0 -and $status.matchedFiles -eq 0) { $status.status = 'warning' }
+  Post-Json "/api/agent/hosts/$($config.hostId)/log-status" $status
 }
 function Get-OpsWmi($className) {
   if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) { return Get-CimInstance $className }
   return Get-WmiObject $className
+}
+function Get-UptimeSeconds($os) {
+  try {
+    $bootTime = $os.LastBootUpTime
+    if ($bootTime) { return [math]::Max(0, [int]((Get-Date) - ([System.Management.ManagementDateTimeConverter]::ToDateTime($bootTime))).TotalSeconds) }
+  } catch {}
+  return 0
 }
 function Collect-Metrics {
   $cpuSamples = Get-OpsWmi 'Win32_Processor' | Where-Object { $null -ne $_.LoadPercentage }
@@ -808,8 +1051,7 @@ function Collect-Metrics {
   $systemDrive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
   $diskInfo = Get-OpsWmi 'Win32_LogicalDisk' | Where-Object { $_.DeviceID -eq $systemDrive } | Select-Object -First 1
   $disk = if ($diskInfo -and $diskInfo.Size -gt 0) { [math]::Round((($diskInfo.Size - $diskInfo.FreeSpace) / $diskInfo.Size) * 100) } else { 0 }
-  $bootTime = $os.LastBootUpTime
-  $uptime = if ($bootTime) { [math]::Max(0, [int]((Get-Date) - ([System.Management.ManagementDateTimeConverter]::ToDateTime($bootTime))).TotalSeconds) } else { 0 }
+  $uptime = Get-UptimeSeconds $os
   @{ cpu = $cpu; memory = $memory; disk = $disk; hostname = $env:COMPUTERNAME; osVersion = "$($os.Caption) $($os.Version)"; uptimeSeconds = $uptime; sampledAt = NowIso }
 }
 function Get-ServiceExecutablePath($pathName) {
@@ -851,11 +1093,213 @@ function Collect-ServiceEvents($state, $services) {
     @{ service = $_; eventType = 'service_not_running'; level = 'ERROR'; message = "$($_) is not running"; source = 'windows-service'; occurredAt = NowIso }
   }
 }
+function Invoke-ProcessCapture($fileName, $arguments, $timeoutSeconds) {
+  $result = New-Object PSObject
+  $result | Add-Member -MemberType NoteProperty -Name ExitCode -Value 1 -Force
+  $result | Add-Member -MemberType NoteProperty -Name Stdout -Value '' -Force
+  $result | Add-Member -MemberType NoteProperty -Name Stderr -Value '' -Force
+  $result | Add-Member -MemberType NoteProperty -Name TimedOut -Value $false -Force
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $fileName
+  $psi.Arguments = $arguments
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $process = New-Object System.Diagnostics.Process
+  $process.StartInfo = $psi
+  [void]$process.Start()
+  $timeoutMs = [Math]::Max(1, [int]$timeoutSeconds) * 1000
+  if (-not $process.WaitForExit($timeoutMs)) {
+    $result.TimedOut = $true
+    try { $process.Kill() } catch {}
+  }
+  $result.Stdout = Compact-Text ($process.StandardOutput.ReadToEnd()) 20000
+  $result.Stderr = Compact-Text ($process.StandardError.ReadToEnd()) 20000
+  try { $result.ExitCode = [int]$process.ExitCode } catch { $result.ExitCode = 1 }
+  return $result
+}
+function Invoke-BatchScriptJob($job) {
+  $scriptBase64 = [string]$job.scriptBase64
+  $timeoutSeconds = 120
+  try { if ($job.timeoutSeconds) { $timeoutSeconds = [int]$job.timeoutSeconds } } catch {}
+  $success = $false
+  $stdout = ''
+  $stderr = ''
+  $summary = ''
+  $exitCode = 1
+  $tempPath = Join-Path $env:TEMP ("ops-batch-" + $job.id + ".ps1")
+  try {
+    $scriptText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($scriptBase64))
+    [System.IO.File]::WriteAllText($tempPath, $scriptText, [Text.Encoding]::UTF8)
+    $result = Invoke-ProcessCapture 'powershell.exe' ("-NoProfile -ExecutionPolicy Bypass -File " + '"' + $tempPath + '"') $timeoutSeconds
+    $stdout = $result.Stdout
+    $stderr = $result.Stderr
+    $exitCode = [int]$result.ExitCode
+    if ($result.TimedOut) {
+      $success = $false
+      $summary = "Batch script timed out ($($timeoutSeconds)s)"
+    } else {
+      $success = ($exitCode -eq 0)
+      $summary = if ($success) { "Batch script succeeded, exit code 0" } else { "Batch script failed, exit code $exitCode" }
+    }
+  } catch {
+    $success = $false
+    $stderr = [string]$_.Exception.Message
+    $summary = "Batch script exception: $stderr"
+  } finally {
+    Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+  }
+  Post-Json "/api/agent/hosts/$($config.hostId)/jobs/$($job.id)/result" @{ success = $success; summary = $summary; stdout = $stdout; stderr = $stderr; exitCode = $exitCode }
+}
+function Set-AgentVersion($targetVersion) {
+  $config.agentVersion = [string]$targetVersion
+  [System.IO.File]::WriteAllText($configPath, (ConvertTo-OpsJson $config), [Text.Encoding]::UTF8)
+  $info = New-Object PSObject
+  $info | Add-Member -MemberType NoteProperty -Name version -Value ([string]$targetVersion) -Force
+  $info | Add-Member -MemberType NoteProperty -Name hostId -Value ([string]$config.hostId) -Force
+  $info | Add-Member -MemberType NoteProperty -Name installedBy -Value 'ops-platform-self-update' -Force
+  [System.IO.File]::WriteAllText((Join-Path $base 'agent-info.json'), (ConvertTo-OpsJson $info), [Text.Encoding]::UTF8)
+}
+function Install-AgentUpdatePackage($targetVersion, $tempPath, $scriptPath) {
+  $moved = $false
+  for ($attempt = 1; $attempt -le 5; $attempt += 1) {
+    try {
+      Move-Item -LiteralPath $tempPath -Destination $scriptPath -Force
+      $moved = $true
+      break
+    } catch {
+      if ($attempt -eq 5) { throw }
+      Start-Sleep -Seconds 1
+    }
+  }
+  if (-not $moved) { throw 'update script was not moved' }
+  Set-AgentVersion $targetVersion
+}
+function Escape-PsSingle($value) {
+  return ([string]$value).Replace("'", "''")
+}
+function Write-AgentUpdater($targetVersion, $tempPath, $scriptPath, $jobId) {
+  $updaterPath = Join-Path $base 'ops-platform-agent-updater.ps1'
+  $updaterText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(windowsAgentUpdaterTemplate, 'utf8').toString('base64')}'))
+  $updaterText = $updaterText.Replace('__BASE__', (Escape-PsSingle $base))
+  $updaterText = $updaterText.Replace('__TEMP_PATH__', (Escape-PsSingle $tempPath))
+  $updaterText = $updaterText.Replace('__SCRIPT_PATH__', (Escape-PsSingle $scriptPath))
+  $updaterText = $updaterText.Replace('__CONFIG_PATH__', (Escape-PsSingle $configPath))
+  $updaterText = $updaterText.Replace('__TARGET_VERSION__', (Escape-PsSingle $targetVersion))
+  $updaterText = $updaterText.Replace('__HOST_ID__', (Escape-PsSingle $config.hostId))
+  $updaterText = $updaterText.Replace('__AGENT_TOKEN__', (Escape-PsSingle $config.agentToken))
+  $updaterText = $updaterText.Replace('__API_BASE_URL__', (Escape-PsSingle $config.apiBaseUrl))
+  $updaterText = $updaterText.Replace('__JOB_ID__', (Escape-PsSingle $jobId))
+  [System.IO.File]::WriteAllText($updaterPath, $updaterText, [Text.Encoding]::UTF8)
+  return $updaterPath
+}
+function Invoke-AgentUpdateJob($job) {
+  $success = $false
+  $stdout = ''
+  $stderr = ''
+  $summary = ''
+  $targetVersion = [string]$job.targetVersion
+  $tempPath = Join-Path $base 'ops-platform-agent.ps1.new'
+  $scriptPath = Join-Path $base 'ops-platform-agent.ps1'
+  try {
+    $package = Get-Json "/api/agent/hosts/$($config.hostId)/update-package?os=Windows"
+    if ($package.version) { $targetVersion = [string]$package.version }
+    $scriptBase64 = [string]$package.scriptBase64
+    if (Is-Blank $targetVersion) { throw 'missing target version' }
+    if (Is-Blank $scriptBase64) { throw 'missing update package script' }
+    $scriptText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($scriptBase64))
+    if ($scriptText.IndexOf('OPS_AGENT_SELF_UPDATE_MARKER') -lt 0) { throw 'update package validation failed' }
+    [System.IO.File]::WriteAllText($tempPath, $scriptText, [Text.Encoding]::UTF8)
+    try {
+      Install-AgentUpdatePackage $targetVersion $tempPath $scriptPath
+      $success = $true
+      $stdout = "script=$scriptPath; mode=direct"
+      $summary = "Agent updated to $targetVersion"
+      try { schtasks /Run /TN OpsPlatformAgent | Out-Null } catch {}
+    } catch {
+      $directError = [string]$_.Exception.Message
+      $updaterPath = Write-AgentUpdater $targetVersion $tempPath $scriptPath ([string]$job.id)
+      $arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $updaterPath + '"'
+      Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden
+      $success = $true
+      $stdout = "script=$scriptPath; updater=$updaterPath; directError=$directError"
+      $summary = "Agent update scheduled to $targetVersion"
+    }
+  } catch {
+    $success = $false
+    $stderr = [string]$_.Exception.Message
+    $summary = "Agent update failed: $stderr"
+  } finally {
+    if (-not $success) { Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue }
+  }
+  Post-Json "/api/agent/hosts/$($config.hostId)/jobs/$($job.id)/result" @{ success = $success; summary = $summary; stdout = $stdout; stderr = $stderr; version = $targetVersion }
+}
+function Invoke-ServiceControlJob($job) {
+  $serviceName = [string]$job.serviceName
+  $action = [string]$job.action
+  $serviceId = [string]$job.serviceId
+  $success = $false
+  $stdout = ''
+  $stderr = ''
+  $summary = ''
+  try {
+    $svc = Get-Service -Name $serviceName -ErrorAction Stop
+    if ($action -eq 'restart') {
+      if ($svc.Status -eq 'Running') {
+        Stop-Service -Name $serviceName -ErrorAction Stop
+        $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        $svc.Refresh()
+      }
+      Start-Service -Name $serviceName -ErrorAction Stop
+      $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+      $svc.Refresh()
+      if ($svc.Status -ne 'Running') { throw "Service status is $($svc.Status), expected Running" }
+    } elseif ($action -eq 'start') {
+      if ($svc.Status -ne 'Running') {
+        Start-Service -Name $serviceName -ErrorAction Stop
+        $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+      }
+      $svc.Refresh()
+      if ($svc.Status -ne 'Running') { throw "Service status is $($svc.Status), expected Running" }
+    } elseif ($action -eq 'stop') {
+      if ($svc.Status -ne 'Stopped') {
+        Stop-Service -Name $serviceName -ErrorAction Stop
+        $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+      }
+      $svc.Refresh()
+      if ($svc.Status -ne 'Stopped') { throw "Service status is $($svc.Status), expected Stopped" }
+    } else {
+      throw "Unsupported service action: $action"
+    }
+    $success = $true
+    $stdout = "STATUS=$($svc.Status)"
+    $summary = "Service $serviceName $action succeeded, current status $($svc.Status)"
+  } catch {
+    $success = $false
+    $stderr = [string]$_.Exception.Message
+    $summary = "Service $serviceName $action failed: $stderr"
+  }
+  Post-Json "/api/agent/hosts/$($config.hostId)/jobs/$($job.id)/result" @{ action = $action; serviceId = $serviceId; serviceName = $serviceName; success = $success; summary = $summary; stdout = $stdout; stderr = $stderr }
+}
+function Process-ServiceJobs {
+  for ($index = 0; $index -lt 3; $index++) {
+    $response = Get-Json "/api/agent/hosts/$($config.hostId)/jobs/next"
+    if (-not $response -or -not $response.job) { return }
+    if ($response.job.type -eq 'batch_run_script') {
+      Invoke-BatchScriptJob $response.job
+    } elseif ($response.job.type -eq 'update_agent') {
+      Invoke-AgentUpdateJob $response.job
+    } else {
+      Invoke-ServiceControlJob $response.job
+    }
+  }
+}
 function Get-LogLevel($line) {
-  if ($line -match '(?i)error|exception|failed|fatal|panic|错误|异常|失败') { return 'ERROR' }
-  if ($line -match '(?i)warn|warning|警告|告警') { return 'WARN' }
-  if ($line -match '(?i)debug|trace|调试') { return 'DEBUG' }
-  if ($line -match '(?i)info|notice|成功|启动|连接') { return 'INFO' }
+  if ($line -match '(?i)error|exception|failed|failure|fatal|panic') { return 'ERROR' }
+  if ($line -match '(?i)warn|warning|alert') { return 'WARN' }
+  if ($line -match '(?i)debug|trace') { return 'DEBUG' }
+  if ($line -match '(?i)info|notice|success|started|connected') { return 'INFO' }
   return 'INFO'
 }
 function Get-OpsBusinessNow {
@@ -1005,34 +1449,199 @@ function Read-ConfiguredLogFile($pathKey, $last, $maxLines) {
   }
   New-LogReadResult $lines $position
 }
-function Collect-ConfiguredLogs($state) {
+function Collect-ConfiguredLogs($state, $collectionStatus) {
   $logs = @()
   $configResponse = Get-Json "/api/agent/hosts/$($config.hostId)/log-config"
   $paths = if ($configResponse -and $configResponse.paths) { @($configResponse.paths) } else { @() }
+  if ($collectionStatus) { $collectionStatus.configPaths = @($paths) }
   if (-not $state.fileLogOffsets) { $state | Add-Member -MemberType NoteProperty -Name fileLogOffsets -Value (New-Object PSObject) -Force }
   foreach ($pathValue in $paths | Select-Object -First 20) {
-    $items = @(Get-ConfiguredLogFiles $pathValue $state.fileLogOffsets)
-    foreach ($item in $items) {
-      $pathKey = $item.FullName
-      $key = 'v3:' + $pathKey
-      $last = 0
-      if ($state.fileLogOffsets.PSObject.Properties[$key]) { $last = [int64]$state.fileLogOffsets.$key }
-      if ($last -gt $item.Length) { $last = 0 }
-      $result = Read-ConfiguredLogFile $pathKey $last 500
-      foreach ($entry in @($result.Lines)) {
-        $line = [string]$entry.Text
-        if (Is-Blank $line) { continue }
-        $level = Get-LogLevel $line
-        $hashInput = $key + ':' + $entry.Offset + ':' + $line
-        $hash = (Get-Sha1Hex $hashInput).Substring(0, 16)
-        $serviceName = [System.IO.Path]::GetFileNameWithoutExtension($item.Name)
-        if (Is-Blank $serviceName) { $serviceName = if ($item.Name) { [string]$item.Name } else { 'file' } }
-        $logs += @{ timestamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); service = $serviceName; level = $level; traceId = "file:$hash"; message = (Compact-Text $line 2000); source = $pathKey; labels = @{ logPath = $pathKey; offset = $entry.Offset } }
+    $expandedPath = Expand-DateTemplate $pathValue
+    $pathReadLines = 0
+    $pathUploadedLines = 0
+    $pathError = ''
+    $files = @()
+    $exists = (Test-Path -LiteralPath $expandedPath)
+    $items = @()
+    try {
+      $items = @(Get-ConfiguredLogFiles $pathValue $state.fileLogOffsets)
+      foreach ($item in $items) {
+        $pathKey = $item.FullName
+        if (Is-Blank $pathKey) { continue }
+        $files += ([string]$pathKey)
+        $key = 'v3:' + $pathKey
+        $last = Get-StateInt64 $state.fileLogOffsets $key 0
+        if ($last -gt $item.Length) { $last = 0 }
+        $result = Read-ConfiguredLogFile $pathKey $last 500
+        foreach ($entry in @($result.Lines)) {
+          $line = [string]$entry.Text
+          if (Is-Blank $line) { continue }
+          $level = Get-LogLevel $line
+          $hashInput = $key + ':' + $entry.Offset + ':' + $line
+          $hash = (Get-Sha1Hex $hashInput).Substring(0, 16)
+          $serviceName = [System.IO.Path]::GetFileNameWithoutExtension($item.Name)
+          if (Is-Blank $serviceName) { $serviceName = if ($item.Name) { [string]$item.Name } else { 'file' } }
+          $logs += @{ timestamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); service = $serviceName; level = $level; traceId = "file:$hash"; message = (Compact-Text $line 2000); source = $pathKey; labels = @{ logPath = $pathKey; offset = $entry.Offset } }
+          $pathReadLines += 1
+          $pathUploadedLines += 1
+        }
+        Set-StateInt64 $state.fileLogOffsets $key $result.Position
       }
-      $state.fileLogOffsets | Add-Member -MemberType NoteProperty -Name $key -Value ([int64]$result.Position) -Force
+    } catch {
+      $pathError = [string]$_.Exception.Message
+      Set-LogCollectionError $collectionStatus $pathError
+    }
+    if ($collectionStatus) {
+      $matchedCount = @($items).Count
+      $collectionStatus.matchedFiles = [int]$collectionStatus.matchedFiles + $matchedCount
+      $collectionStatus.readLines = [int]$collectionStatus.readLines + $pathReadLines
+      $pathStatus = New-PathCollectionStatus $pathValue $expandedPath $exists $matchedCount $pathReadLines $pathUploadedLines $pathError ($files | Select-Object -First 20)
+      $collectionStatus.paths += $pathStatus
     }
   }
   $logs
+}
+function Decode-Base64Utf8($value) {
+  if (Is-Blank $value) { return '' }
+  try { return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$value)) } catch { return '' }
+}
+function New-LocalMonitorRule($id, $threshold, $level, $source, $service, $keywords) {
+  $rule = New-Object PSObject
+  $rule | Add-Member -MemberType NoteProperty -Name Id -Value ([string]$id) -Force
+  $rule | Add-Member -MemberType NoteProperty -Name Threshold -Value ([int][Math]::Max(1, [int]$threshold)) -Force
+  $rule | Add-Member -MemberType NoteProperty -Name Level -Value ([string]$level) -Force
+  $rule | Add-Member -MemberType NoteProperty -Name Source -Value ([string]$source) -Force
+  $rule | Add-Member -MemberType NoteProperty -Name Service -Value ([string]$service) -Force
+  $rule | Add-Member -MemberType NoteProperty -Name Keywords -Value @($keywords) -Force
+  return $rule
+}
+function Parse-LocalMonitorRules($rulesText) {
+  $rules = @()
+  if (Is-Blank $rulesText) { return $rules }
+  foreach ($line in ([string]$rulesText -split ([string][char]10))) {
+    $text = ([string]$line).Trim()
+    if (Is-Blank $text) { continue }
+    $parts = $text -split ([string][char]9)
+    if ($parts.Count -lt 6) { continue }
+    if (Is-Blank $parts[0]) { continue }
+    $keywords = @()
+    foreach ($item in ([string]$parts[5] -split ',')) {
+      $keyword = Decode-Base64Utf8 $item
+      if (-not (Is-Blank $keyword)) { $keywords += $keyword }
+    }
+    $rules += (New-LocalMonitorRule $parts[0] $parts[1] $parts[2] (Decode-Base64Utf8 $parts[3]) (Decode-Base64Utf8 $parts[4]) $keywords)
+  }
+  return $rules
+}
+function Test-LocalSourceMatch($ruleSource, $pathKey) {
+  if (Is-Blank $ruleSource) { return $true }
+  $source = (Expand-DateTemplate $ruleSource).ToLowerInvariant().Replace('/', '\')
+  if ($source -eq 'file') { return $true }
+  $path = ([string]$pathKey).ToLowerInvariant().Replace('/', '\')
+  if ($path -eq $source) { return $true }
+  if ($source.EndsWith('\')) { return $path.StartsWith($source) }
+  return $path.StartsWith($source + '\')
+}
+function Get-LocalMonitorResult($results, $rule) {
+  if (-not $results -or -not $rule) { return $null }
+  $ruleId = ''
+  try { $ruleId = [string]$rule.Id } catch {}
+  if (Is-Blank $ruleId) { return $null }
+  if ($results.ContainsKey($ruleId)) { return $results[$ruleId] }
+  $item = New-Object PSObject
+  $item | Add-Member -MemberType NoteProperty -Name ruleId -Value $ruleId -Force
+  $item | Add-Member -MemberType NoteProperty -Name matchedCount -Value 0 -Force
+  $item | Add-Member -MemberType NoteProperty -Name matchedKeywords -Value @() -Force
+  $item | Add-Member -MemberType NoteProperty -Name matchedSources -Value @() -Force
+  $item | Add-Member -MemberType NoteProperty -Name matchedFiles -Value @() -Force
+  $item | Add-Member -MemberType NoteProperty -Name readLines -Value 0 -Force
+  $results[$ruleId] = $item
+  return $item
+}
+function Add-UniqueText($items, $value, $maxItems) {
+  $text = [string]$value
+  if (Is-Blank $text) { return @($items) }
+  if (@($items) -contains $text) { return @($items) }
+  if (@($items).Count -ge $maxItems) { return @($items) }
+  return @($items) + $text
+}
+function Test-LocalRuleMatch($rule, $pathKey, $serviceName, $level, $line, $result) {
+  if (-not (Test-LocalSourceMatch $rule.Source $pathKey)) { return $false }
+  if (-not (Is-Blank $rule.Service) -and ([string]$serviceName).ToLowerInvariant() -ne ([string]$rule.Service).ToLowerInvariant()) { return $false }
+  if (-not (Is-Blank $rule.Level) -and ([string]$level).ToUpperInvariant() -ne ([string]$rule.Level).ToUpperInvariant()) { return $false }
+  $keywords = @($rule.Keywords)
+  if ($keywords.Count -le 0) { return $true }
+  $matched = $false
+  foreach ($keyword in $keywords) {
+    if (([string]$line).IndexOf([string]$keyword, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      $matched = $true
+      $result.matchedKeywords = Add-UniqueText $result.matchedKeywords $keyword 20
+    }
+  }
+  return $matched
+}
+function Collect-LocalLogMonitor($state, $collectionStatus) {
+  $configResponse = Get-Json "/api/agent/hosts/$($config.hostId)/log-monitor-config"
+  $paths = if ($configResponse -and $configResponse.paths) { @($configResponse.paths) } else { @() }
+  $rulesText = ''
+  if ($configResponse) { $rulesText = [string]$configResponse.rulesText }
+  $rules = Parse-LocalMonitorRules $rulesText
+  if ($collectionStatus) { $collectionStatus.configPaths = @($paths) }
+  if (-not $state.fileLogOffsets) { $state | Add-Member -MemberType NoteProperty -Name fileLogOffsets -Value (New-Object PSObject) -Force }
+  $results = @{}
+  foreach ($rule in $rules) { [void](Get-LocalMonitorResult $results $rule) }
+  foreach ($pathValue in $paths | Select-Object -First 20) {
+    $expandedPath = Expand-DateTemplate $pathValue
+    $pathReadLines = 0
+    $pathError = ''
+    $files = @()
+    $exists = (Test-Path -LiteralPath $expandedPath)
+    $items = @()
+    try {
+      $items = @(Get-ConfiguredLogFiles $pathValue $state.fileLogOffsets)
+      foreach ($item in $items) {
+        $pathKey = $item.FullName
+        if (Is-Blank $pathKey) { continue }
+        $files += ([string]$pathKey)
+        $key = 'v3:' + $pathKey
+        $last = Get-StateInt64 $state.fileLogOffsets $key 0
+        if ($last -gt $item.Length) { $last = 0 }
+        $result = Read-ConfiguredLogFile $pathKey $last 1000
+        $serviceName = [System.IO.Path]::GetFileNameWithoutExtension($item.Name)
+        if (Is-Blank $serviceName) { $serviceName = if ($item.Name) { [string]$item.Name } else { 'file' } }
+        foreach ($entry in @($result.Lines)) {
+          $line = [string]$entry.Text
+          if (Is-Blank $line) { continue }
+          $pathReadLines += 1
+          $level = Get-LogLevel $line
+          foreach ($rule in $rules) {
+            $monitorResult = Get-LocalMonitorResult $results $rule
+            if (-not $monitorResult) { continue }
+            $monitorResult.readLines = [int]$monitorResult.readLines + 1
+            if (Test-LocalRuleMatch $rule $pathKey $serviceName $level $line $monitorResult) {
+              $monitorResult.matchedCount = [int]$monitorResult.matchedCount + 1
+              $monitorResult.matchedSources = Add-UniqueText $monitorResult.matchedSources $pathKey 20
+              $monitorResult.matchedFiles = Add-UniqueText $monitorResult.matchedFiles $pathKey 20
+            }
+          }
+        }
+        Set-StateInt64 $state.fileLogOffsets $key $result.Position
+      }
+    } catch {
+      $pathError = [string]$_.Exception.Message
+      Set-LogCollectionError $collectionStatus $pathError
+    }
+    if ($collectionStatus) {
+      $matchedCount = @($items).Count
+      $collectionStatus.matchedFiles = [int]$collectionStatus.matchedFiles + $matchedCount
+      $collectionStatus.readLines = [int]$collectionStatus.readLines + $pathReadLines
+      $pathStatus = New-PathCollectionStatus $pathValue $expandedPath $exists $matchedCount $pathReadLines 0 $pathError ($files | Select-Object -First 20)
+      $collectionStatus.paths += $pathStatus
+    }
+  }
+  if ($results.Count -gt 0) {
+    Post-Json "/api/agent/hosts/$($config.hostId)/log-monitor-results" @{ mode = 'local_monitor'; rawLogUpload = $false; sampledAt = NowIso; results = @($results.Values) }
+  }
 }
 function Get-EventLogLevel($event) {
   switch ([int]$event.Level) {
@@ -1050,7 +1659,7 @@ function Get-LegacyEventLogLevel($event) {
   if ($entryType -match 'Warning') { return 'WARN' }
   return 'INFO'
 }
-function Collect-Logs($state) {
+function Collect-Logs($state, $collectionStatus) {
   $logs = @()
   if (-not $state.eventRecordIds) { $state | Add-Member -MemberType NoteProperty -Name eventRecordIds -Value (New-Object PSObject) -Force }
   foreach ($logName in @('System', 'Application')) {
@@ -1058,9 +1667,8 @@ function Collect-Logs($state) {
     if (Get-Command Get-WinEvent -ErrorAction SilentlyContinue) {
       try {
         $events = @(Get-WinEvent -LogName $logName -MaxEvents 500 -ErrorAction Stop | Sort-Object RecordId)
-        $last = 0
+        $last = Get-StateInt64 $state.eventRecordIds $logName 0
         $maxRecordId = $last
-        if ($state.eventRecordIds.PSObject.Properties[$logName]) { $last = [int64]$state.eventRecordIds.$logName; $maxRecordId = $last }
         foreach ($event in $events | Where-Object { $_.RecordId -gt $last }) {
           if ($event.RecordId -gt $maxRecordId) { $maxRecordId = $event.RecordId }
           $provider = if ($event.ProviderName) { $event.ProviderName } else { $logName }
@@ -1068,30 +1676,36 @@ function Collect-Logs($state) {
           $levelDisplayName = if ($event.LevelDisplayName) { $event.LevelDisplayName } else { $level }
           $logs += @{ timestamp = $event.TimeCreated.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); service = $provider; level = $level; traceId = "eventlog:$($logName):$($event.RecordId)"; message = (Compact-Text $event.Message 2000); source = "eventlog:$logName"; labels = @{ recordId = $event.RecordId; eventId = $event.Id; provider = $provider; logName = $logName; level = $event.Level; levelDisplayName = $levelDisplayName; machineName = $event.MachineName } }
         }
-        $state.eventRecordIds | Add-Member -MemberType NoteProperty -Name $logName -Value $maxRecordId -Force
+        Set-StateInt64 $state.eventRecordIds $logName $maxRecordId
         $usedModern = $true
       } catch {}
     }
     if ((-not $usedModern) -and (Get-Command Get-EventLog -ErrorAction SilentlyContinue)) {
       $stateKey = 'legacy:' + $logName
       $events = @(Get-EventLog -LogName $logName -Newest 500 -ErrorAction SilentlyContinue | Sort-Object Index)
-      $last = 0
+      $last = Get-StateInt64 $state.eventRecordIds $stateKey 0
       $maxRecordId = $last
-      if ($state.eventRecordIds.PSObject.Properties[$stateKey]) { $last = [int64]$state.eventRecordIds.$stateKey; $maxRecordId = $last }
       foreach ($event in $events | Where-Object { $_.Index -gt $last }) {
         if ($event.Index -gt $maxRecordId) { $maxRecordId = $event.Index }
         $provider = if ($event.Source) { $event.Source } else { $logName }
         $level = Get-LegacyEventLogLevel $event
         $logs += @{ timestamp = $event.TimeGenerated.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); service = $provider; level = $level; traceId = "eventlog:$($logName):$($event.Index)"; message = (Compact-Text $event.Message 2000); source = "eventlog:$logName"; labels = @{ recordId = $event.Index; eventId = $event.EventID; provider = $provider; logName = $logName; levelDisplayName = [string]$event.EntryType; machineName = $event.MachineName } }
       }
-      $state.eventRecordIds | Add-Member -MemberType NoteProperty -Name $stateKey -Value $maxRecordId -Force
+      Set-StateInt64 $state.eventRecordIds $stateKey $maxRecordId
     }
   }
-  $logs | Sort-Object { $_['timestamp'] } | Select-Object -Last 1000
+  $logs = @($logs | Sort-Object { $_['timestamp'] } | Select-Object -Last 1000)
+  if ($collectionStatus) { $collectionStatus.eventLogs = $logs.Count }
+  $logs
 }
 function Collect-Once {
   $state = Load-State
   $services = @()
+  try {
+    Process-ServiceJobs
+  } catch {
+    Write-Output "service jobs skipped: $($_.Exception.Message)"
+  }
   try {
     $metrics = Collect-Metrics
     Post-Json "/api/agent/hosts/$($config.hostId)/metrics" $metrics
@@ -1112,13 +1726,19 @@ function Collect-Once {
   }
   $eventRecordIdsBefore = ConvertTo-OpsJson $state.eventRecordIds
   $fileLogOffsetsBefore = ConvertTo-OpsJson $state.fileLogOffsets
+  $logCollectionStatus = New-LogCollectionStatus
   try {
-    $logs = @(Collect-Logs $state) + @(Collect-ConfiguredLogs $state)
-    if ($logs.Count -gt 0) { Post-LogBatches $logs }
+    Collect-LocalLogMonitor $state $logCollectionStatus
   } catch {
     $state.eventRecordIds = ConvertFrom-OpsJson $eventRecordIdsBefore
     $state.fileLogOffsets = ConvertFrom-OpsJson $fileLogOffsetsBefore
+    Set-LogCollectionError $logCollectionStatus ([string]$_.Exception.Message)
     Write-Output "logs upload skipped: $($_.Exception.Message)"
+  }
+  try {
+    Post-LogCollectionStatus $logCollectionStatus
+  } catch {
+    Write-Output "log status upload skipped: $($_.Exception.Message)"
   }
   Save-State $state
   Get-Date -Format 'yyyy-MM-dd HH:mm:ss' | Set-Content -Encoding UTF8 -Path (Join-Path $base 'heartbeat')
@@ -1129,8 +1749,8 @@ if ($args.Count -gt 0 -and $args[0] -eq 'once') { Collect-Once } else { while ($
     $agentScript = 'C:\\ProgramData\\OpsPlatformAgent\\ops-platform-agent.ps1'
     $taskCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $agentScript + '" once'
     $intervalMinutes = [Math]::Max(1, [Math]::Ceiling([double]${options.intervalSeconds} / 60))
-    schtasks /End /TN OpsPlatformAgent 2>$null | Out-Null
-    schtasks /Delete /TN OpsPlatformAgent /F 2>$null | Out-Null
+    cmd.exe /c "schtasks.exe /End /TN OpsPlatformAgent >nul 2>nul" | Out-Null
+    cmd.exe /c "schtasks.exe /Delete /TN OpsPlatformAgent /F >nul 2>nul" | Out-Null
     schtasks /Create /TN OpsPlatformAgent /SC MINUTE /MO $intervalMinutes /RU SYSTEM /RL HIGHEST /TR $taskCommand /F | Out-Null
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File $agentScript once
     schtasks /Run /TN OpsPlatformAgent | Out-Null
@@ -1141,7 +1761,7 @@ if ($args.Count -gt 0 -and $args[0] -eq 'once') { Collect-Once } else { while ($
 }
 
 const windowsRestartScript = `
-    schtasks /End /TN OpsPlatformAgent 2>$null | Out-Null
+    cmd.exe /c "schtasks.exe /End /TN OpsPlatformAgent >nul 2>nul" | Out-Null
     schtasks /Run /TN OpsPlatformAgent | Out-Null
     Get-Date -Format 'yyyy-MM-dd HH:mm:ss' | Set-Content -Encoding UTF8 -Path 'C:\\ProgramData\\OpsPlatformAgent\\heartbeat'
     Write-Output 'Ops Platform Agent restarted'
@@ -1156,6 +1776,121 @@ function windowsAgentScript(hostIp: string, options: AgentInstallOptions) {
   const match = installScript.match(/@'\n([\s\S]*?)\n'@ \| Set-Content/)
   if (!match?.[1]) throw new Error('Windows Agent 脚本生成失败')
   return match[1]
+}
+
+function linuxAgentScript() {
+  const installCommand = linuxInstallCommand('0.0.0.0', {
+    hostId: '__HOST_ID__',
+    agentToken: '__AGENT_TOKEN__',
+    apiBaseUrl: 'http://127.0.0.1:3001',
+    intervalSeconds: 60,
+  })
+  const match = installCommand.match(/cat >\/usr\/local\/bin\/ops-platform-agent <<'PY'\n([\s\S]*?)\nPY/)
+  if (!match?.[1]) throw new Error('Linux Agent 脚本生成失败')
+  return match[1]
+}
+
+export function buildAgentUpdatePackage(os: 'Linux' | 'Windows') {
+  const script = os === 'Windows'
+    ? windowsAgentScript('0.0.0.0', {
+        hostId: '__HOST_ID__',
+        agentToken: '',
+        apiBaseUrl: 'http://127.0.0.1:3001',
+        intervalSeconds: 60,
+      })
+    : linuxAgentScript()
+  return {
+    os,
+    version: AGENT_VERSION,
+    script,
+    scriptBase64: Buffer.from(script, 'utf8').toString('base64'),
+  }
+}
+
+export function buildWindowsOfflineAgentInstaller(hostIp: string, options: Omit<AgentInstallOptions, 'agentToken'> & { installerToken: string }) {
+  const base = 'C:/ProgramData/OpsPlatformAgent'
+  const info = JSON.stringify({ version: AGENT_VERSION, hostIp, hostId: options.hostId, installedBy: 'ops-platform-offline' })
+  const apiBaseUrl = options.apiBaseUrl.replace(/\/$/, '')
+  const configTemplate = JSON.stringify({ hostId: options.hostId, agentVersion: AGENT_VERSION, agentToken: '__AGENT_TOKEN__', apiBaseUrl, intervalSeconds: options.intervalSeconds })
+  const enrollPayload = JSON.stringify({ installerToken: options.installerToken })
+  const script = windowsAgentScript(hostIp, { ...options, agentToken: '' })
+  const filename = `install-ops-agent-${hostIp.replace(/[^0-9A-Za-z_.-]/g, '-')}.ps1`
+  const content = `# Ops Platform Windows Agent offline installer
+# Run this file in an elevated PowerShell window.
+$ErrorActionPreference = 'Stop'
+
+Write-Output 'Checking Administrator privileges...'
+& net session >$null 2>&1
+if ($LASTEXITCODE -ne 0) {
+  [Console]::Error.WriteLine('Please run this installer as Administrator.')
+  exit 10
+}
+
+$base = ${psSingle(base)}
+Write-Output "Preparing Agent directory: $base"
+New-Item -ItemType Directory -Force -Path $base | Out-Null
+
+Write-Output 'Stopping existing OpsPlatformAgent task and process...'
+cmd.exe /c "schtasks.exe /End /TN OpsPlatformAgent >nul 2>nul" | Out-Null
+try {
+  $agentProcesses = @(Get-WmiObject -Class Win32_Process -Filter "name = 'powershell.exe'" -ErrorAction SilentlyContinue)
+  foreach ($process in $agentProcesses) {
+    if (([string]$process.CommandLine) -like '*OpsPlatformAgent*') { $process.Terminate() | Out-Null }
+  }
+} catch {}
+Start-Sleep -Seconds 2
+
+function Invoke-AgentEnrollment {
+  $url = ${psSingle(`${apiBaseUrl}/api/agent/hosts/${options.hostId}/offline-enroll`)}
+  $payload = ${psSingle(enrollPayload)}
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+  $request = [System.Net.HttpWebRequest]::Create($url)
+  $request.Method = 'POST'
+  $request.Timeout = 10000
+  $request.ReadWriteTimeout = 10000
+  $request.KeepAlive = $false
+  $request.Proxy = $null
+  $request.ContentType = 'application/json; charset=utf-8'
+  $request.ContentLength = $bytes.Length
+  $stream = $request.GetRequestStream()
+  try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Close() }
+  $response = $request.GetResponse()
+  try {
+    $reader = New-Object -TypeName System.IO.StreamReader -ArgumentList @($response.GetResponseStream(), [System.Text.Encoding]::UTF8)
+    try { $text = $reader.ReadToEnd() } finally { $reader.Close() }
+  } finally {
+    $response.Close()
+  }
+  if ($text -match '"agentToken"\\s*:\\s*"([^"]+)"') { return $matches[1] }
+  throw 'Enrollment succeeded but no agent token was returned.'
+}
+
+Write-Output 'Enrolling Agent with Ops Platform...'
+try {
+  $agentToken = Invoke-AgentEnrollment
+} catch {
+  [Console]::Error.WriteLine("Agent enrollment failed: $($_.Exception.Message)")
+  exit 11
+}
+$configJson = ${psSingle(configTemplate)}.Replace('__AGENT_TOKEN__', $agentToken)
+Write-Output 'Writing Agent files...'
+${psSingle(info)} | Set-Content -Encoding UTF8 -Path (Join-Path $base 'agent-info.json')
+$configJson | Set-Content -Encoding UTF8 -Path (Join-Path $base 'agent-config.json')
+@'
+${script}
+'@ | Set-Content -Encoding UTF8 -Path (Join-Path $base 'ops-platform-agent.ps1')
+
+Write-Output 'Hardening Agent directory ACL...'
+icacls $base /inheritance:r /grant 'Administrators:(OI)(CI)F' 'SYSTEM:(OI)(CI)F' | Out-Null
+$scriptPath = Join-Path $base 'ops-platform-agent.ps1'
+$taskAction = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '"'
+Write-Output 'Creating and starting OpsPlatformAgent scheduled task...'
+& schtasks.exe /Create /TN OpsPlatformAgent /SC ONSTART /RU SYSTEM /TR $taskAction /F | Out-Null
+& schtasks.exe /Run /TN OpsPlatformAgent | Out-Null
+
+Write-Output 'Ops Platform Agent ${AGENT_VERSION} installed. HostId=${options.hostId}; ApiBaseUrl=${apiBaseUrl}'
+`
+  return { filename, content }
 }
 
 async function installWindowsAgent(input: RemoteConnectionInput, options: AgentInstallOptions) {
@@ -1175,7 +1910,7 @@ async function installWindowsAgent(input: RemoteConnectionInput, options: AgentI
     $base = ${psSingle(base)}
     $scriptPath = Join-Path $base 'ops-platform-agent.ps1'
     $configPath = Join-Path $base 'agent-config.json'
-    & schtasks.exe /End /TN OpsPlatformAgent 2>$null | Out-Null
+    cmd.exe /c "schtasks.exe /End /TN OpsPlatformAgent >nul 2>nul" | Out-Null
     try {
       $agentProcesses = @(Get-WmiObject -Class Win32_Process -Filter "name = 'powershell.exe'" -ErrorAction SilentlyContinue)
       foreach ($process in $agentProcesses) {

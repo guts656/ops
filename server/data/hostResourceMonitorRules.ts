@@ -8,10 +8,12 @@ import type { HostResourceMetric, HostResourceMonitorAlertRecord, HostResourceMo
 type RuleRow = NonNullable<Awaited<ReturnType<typeof prisma.hostResourceMonitorRule.findFirst>>>
 type AlertRow = NonNullable<Awaited<ReturnType<typeof prisma.hostResourceMonitorAlert.findFirst>>>
 type HostTarget = { id: string; ip: string; hostname: string; group: string; cpu: number; memory: number; disk: number }
+type SustainedMetricState = { matched: boolean; value: number; sampledAt: Date; windowStart?: Date; sampleCount?: number }
 
 const weekdayMap = [7, 1, 2, 3, 4, 5, 6]
 const metricLabels: Record<HostResourceMetric, string> = { cpu: 'CPU', memory: '内存', disk: '磁盘' }
 const allowedMetrics = new Set<HostResourceMetric>(['cpu', 'memory', 'disk'])
+const SUSTAINED_SAMPLE_GRACE_MS = 90_000
 
 function nowText(date = new Date()) {
   return shanghaiTime(date)
@@ -61,6 +63,7 @@ function toRule(rule: RuleRow): HostResourceMonitorRule {
     hostGroup: rule.hostGroup || undefined,
     metrics: rule.metrics.filter((metric) => allowedMetrics.has(metric as HostResourceMetric)) as HostResourceMetric[],
     threshold: rule.threshold,
+    durationMinutes: rule.durationMinutes ?? 1,
     cooldownMinutes: rule.cooldownMinutes,
     alertLevel: rule.alertLevel as HostResourceMonitorRule['alertLevel'],
     daysOfWeek: rule.daysOfWeek,
@@ -123,6 +126,7 @@ function ruleData(input: HostResourceMonitorRuleInput) {
     hostGroup: hostScope.hostGroup,
     metrics: normalizeMetrics(input.metrics),
     threshold: clampInt(input.threshold, 80, 1, 100),
+    durationMinutes: clampInt(input.durationMinutes, 1, 1, 1440),
     cooldownMinutes: clampInt(input.cooldownMinutes, 30, 1, 1440),
     alertLevel: input.alertLevel ?? '警告',
     daysOfWeek: Array.from(new Set((input.daysOfWeek ?? []).filter((day) => Number.isInteger(day) && day >= 1 && day <= 7))).sort(),
@@ -166,6 +170,36 @@ function serviceText(host: HostTarget) {
   return `${host.hostname || host.ip} (${host.ip})`
 }
 
+async function getSustainedMetricState(rule: HostResourceMonitorRule, host: HostTarget, metric: HostResourceMetric, date: Date): Promise<SustainedMetricState> {
+  const durationMinutes = Math.max(1, rule.durationMinutes ?? 1)
+  if (durationMinutes <= 1) {
+    const value = host[metric]
+    return { matched: value >= rule.threshold, value, sampledAt: date, sampleCount: 1 }
+  }
+
+  const windowStart = new Date(date.getTime() - durationMinutes * 60_000)
+  const points = await prisma.hostResourcePoint.findMany({
+    where: { hostId: host.id, sampledAt: { gte: windowStart, lte: date } },
+    orderBy: { sampledAt: 'asc' },
+    select: { sampledAt: true, cpu: true, memory: true, disk: true },
+  })
+  if (!points.length) return { matched: false, value: host[metric], sampledAt: date, windowStart, sampleCount: 0 }
+
+  const earliest = points[0]
+  const latest = points[points.length - 1]
+  const latestValue = latest[metric]
+  const latestFresh = date.getTime() - latest.sampledAt.getTime() <= SUSTAINED_SAMPLE_GRACE_MS
+  const windowCovered = earliest.sampledAt.getTime() <= windowStart.getTime() + SUSTAINED_SAMPLE_GRACE_MS
+  const allAboveThreshold = points.every((point) => point[metric] >= rule.threshold)
+  return {
+    matched: latestFresh && windowCovered && allAboveThreshold,
+    value: latestValue,
+    sampledAt: latest.sampledAt,
+    windowStart,
+    sampleCount: points.length,
+  }
+}
+
 export async function listHostResourceMonitorRules() {
   const rules = await prisma.hostResourceMonitorRule.findMany({ orderBy: { createdAt: 'desc' } })
   return rules.map(toRule)
@@ -195,9 +229,12 @@ export async function listHostResourceMonitorAlerts(ruleId?: string) {
   return records.map(toAlertRecord)
 }
 
-async function triggerMetricAlert(rule: HostResourceMonitorRule, host: HostTarget, metric: HostResourceMetric, value: number, sampledAt: Date) {
+async function triggerMetricAlert(rule: HostResourceMonitorRule, host: HostTarget, metric: HostResourceMetric, value: number, sampledAt: Date, state?: SustainedMetricState) {
   const label = metricLabels[metric]
-  const content = `${host.hostname || host.ip} ${label} 使用率 ${value}%，达到阈值 ${rule.threshold}%。`
+  const durationMinutes = Math.max(1, rule.durationMinutes ?? 1)
+  const content = durationMinutes > 1
+    ? `${host.hostname || host.ip} ${label} 使用率已持续 ${durationMinutes} 分钟不低于 ${rule.threshold}%，最新值 ${value}%。窗口：${nowText(state?.windowStart ?? new Date(sampledAt.getTime() - durationMinutes * 60_000))} ~ ${nowText(sampledAt)}。`
+    : `${host.hostname || host.ip} ${label} 使用率 ${value}%，达到阈值 ${rule.threshold}%。`
   const notificationResults = await sendMonitorNotifications({ ruleNotification: rule.notification, content: `【${rule.alertLevel}】${rule.name}\n${content}\n主机：${serviceText(host)}\n时间：${nowText(sampledAt)}` })
   const result = await ingestAlert({
     level: rule.alertLevel,
@@ -211,7 +248,7 @@ async function triggerMetricAlert(rule: HostResourceMonitorRule, host: HostTarge
     relatedId: rule.id,
     fingerprint: `host-resource:${rule.id}:${host.id}:${metric}`,
     outboundNotification: { channels: ['站内告警'] },
-    metadata: { ruleId: rule.id, ruleName: rule.name, hostId: host.id, sourceHostId: host.id, hostname: host.hostname, ip: host.ip, metric, actualValue: value, threshold: rule.threshold, sampledAt: sampledAt.toISOString() },
+    metadata: { ruleId: rule.id, ruleName: rule.name, hostId: host.id, sourceHostId: host.id, hostname: host.hostname, ip: host.ip, metric, actualValue: value, threshold: rule.threshold, durationMinutes, windowStart: state?.windowStart?.toISOString(), sampleCount: state?.sampleCount, sampledAt: sampledAt.toISOString() },
   })
   await prisma.$transaction([
     ...(result.alert ? [prisma.hostResourceMonitorAlert.create({ data: { ruleId: rule.id, alertId: result.alert.id, hostId: host.id, metric, value, threshold: rule.threshold, sampledAt, notificationResults } })] : []),
@@ -230,9 +267,9 @@ export async function evaluateHostResourceMonitorRule(rule: HostResourceMonitorR
     if (!ruleMatchesHost(rule, host)) continue
     evaluated++
     for (const metric of rule.metrics) {
-      const value = host[metric]
-      if (value >= rule.threshold) {
-        await triggerMetricAlert(rule, host, metric, value, date)
+      const state = await getSustainedMetricState(rule, host, metric, date)
+      if (state.matched) {
+        await triggerMetricAlert(rule, host, metric, state.value, state.sampledAt, state)
         triggered++
       }
     }
@@ -252,9 +289,9 @@ export async function evaluateHostResourceMonitorRulesForHost(hostId: string, sa
     if (inCooldown(rule, sampledAt)) { results.push({ rule, evaluated: 0, triggered: 0, skippedReason: '处于冷却期' }); continue }
     let triggered = 0
     for (const metric of rule.metrics) {
-      const value = host[metric]
-      if (value >= rule.threshold) {
-        await triggerMetricAlert(rule, host, metric, value, sampledAt)
+      const state = await getSustainedMetricState(rule, host, metric, sampledAt)
+      if (state.matched) {
+        await triggerMetricAlert(rule, host, metric, state.value, state.sampledAt, state)
         triggered++
       }
     }

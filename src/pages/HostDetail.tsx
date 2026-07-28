@@ -1,25 +1,28 @@
-import { ArrowLeftOutlined, DeleteOutlined, ReloadOutlined, ToolOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, DeleteOutlined, DownloadOutlined, SyncOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Col, Descriptions, Empty, Flex, Popconfirm, Progress, Row, Space, Spin, Tag, Typography, message } from 'antd'
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import PermissionGate from '../components/auth/PermissionGate'
-import AgentCredentialModal from '../components/hosts/AgentCredentialModal'
 import AgentJobPanel from '../components/hosts/AgentJobPanel'
 import HostAuditLogPanel from '../components/hosts/HostAuditLogPanel'
 import HostContainerPanel from '../components/hosts/HostContainerPanel'
 import HostMaintenanceModal from '../components/hosts/HostMaintenanceModal'
+import HostLogCollectionStatusPanel from '../components/hosts/HostLogCollectionStatusPanel'
 import HostResourceTrend from '../components/hosts/HostResourceTrend'
 import HostServiceEventPanel from '../components/hosts/HostServiceEventPanel'
 import HostServicePanel from '../components/hosts/HostServicePanel'
 import { getErrorMessage } from '../api/http'
 import { PERMISSIONS } from '../config/permissions'
 import { useHostStore } from '../stores/hostStore'
-import type { HostServiceItem } from '../types/service'
 import { getHostCategory, hostCategoryColor } from '../utils/hostStatus'
 import { formatShanghaiTime } from '../utils/time'
 
 const lifecycleStatusColor = { 在线: 'green', 离线: 'red', 纳管中: 'blue' }
 const agentColor = { 正常: 'green', 异常: 'red', 未安装: 'default', 安装中: 'blue' }
+
+function isOfflineInstallPending(host: { os: string; agentStatus: string; pullCredential?: unknown }) {
+  return host.os === 'Windows' && host.agentStatus === '安装中' && !host.pullCredential
+}
 
 function valueOrDash(value?: string | number | null) {
   return value || value === 0 ? value : '-'
@@ -42,10 +45,9 @@ function formatUptime(seconds?: number) {
 export default function HostDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { selectedHost, resourceTrend, auditLogs, agentJobs, hostServices, hostContainers, serviceEvents, hostLogs, detailLoading, loadHostDetail, refreshHostMetrics, deleteHost, remanageHost, setHostMaintenance, refreshHostInfo, pullHostMetrics, saveHostPullCredential, disableHostPullCredential, reinstallAgent, restartAgent, startService, stopService, deleteServiceRecord } = useHostStore()
-  const [credentialAction, setCredentialAction] = useState<'refreshInfo' | 'pullMetrics' | 'autoPull' | 'reinstall' | 'restart' | 'startService' | 'stopService' | null>(null)
-  const [selectedService, setSelectedService] = useState<HostServiceItem>()
-  const [credentialLoading, setCredentialLoading] = useState(false)
+  const { selectedHost, resourceTrend, auditLogs, agentJobs, hostServices, hostContainers, serviceEvents, hostLogs, hostLogCollectionStatus, detailLoading, loadHostDetail, refreshHostMetrics, deleteHost, setHostMaintenance, downloadWindowsOfflineAgentPackage, queueAgentUpdate, startService, stopService, restartService, ignoreServiceRecord } = useHostStore()
+  const [offlinePackageLoading, setOfflinePackageLoading] = useState(false)
+  const [agentUpdateLoading, setAgentUpdateLoading] = useState(false)
   const [maintenanceOpen, setMaintenanceOpen] = useState(false)
   const [maintenanceLoading, setMaintenanceLoading] = useState(false)
 
@@ -71,53 +73,36 @@ export default function HostDetail() {
   const transport = selectedHost.os === 'Windows' ? 'WinRM' : 'SSH'
   const showOrdinaryServices = selectedHost.os !== 'Linux'
   const hostCategory = getHostCategory(selectedHost)
+  const offlineInstallPending = isOfflineInstallPending(selectedHost)
 
-  async function submitCredentials(values: Parameters<typeof reinstallAgent>[1]) {
-    if (!selectedHost || !credentialAction) return
-    setCredentialLoading(true)
+  async function downloadOfflinePackage() {
+    if (!selectedHost) return
+    setOfflinePackageLoading(true)
     try {
-      if (credentialAction === 'refreshInfo') {
-        await refreshHostInfo(selectedHost.id, values)
-        message.success('主机信息已刷新')
-      }
-      if (credentialAction === 'pullMetrics') {
-        await pullHostMetrics(selectedHost.id, values)
-        message.success(`已通过 ${transport} 拉取主机指标`)
-      }
-      if (credentialAction === 'autoPull') {
-        await saveHostPullCredential(selectedHost.id, values)
-        message.success('已加密保存凭据并启用 30 秒自动 Pull')
-      }
-      if (credentialAction === 'reinstall') {
-        await reinstallAgent(selectedHost.id, values)
-        message.success('Agent 安装任务已完成，请查看下方任务日志确认状态')
-      }
-      if (credentialAction === 'restart') {
-        await restartAgent(selectedHost.id, values)
-        message.success('Agent 重启任务已完成')
-      }
-      if (credentialAction === 'startService' && selectedService) {
-        await startService(selectedHost.id, selectedService.id, values)
-        message.success('服务启动命令已执行，请查看服务状态和任务日志')
-      }
-      if (credentialAction === 'stopService' && selectedService) {
-        await stopService(selectedHost.id, selectedService.id, values)
-        message.success('服务停止命令已执行，请查看服务状态和任务日志')
-      }
-      setCredentialAction(null)
-      setSelectedService(undefined)
-      if (selectedHost?.id) await loadHostDetail(selectedHost.id)
+      await downloadWindowsOfflineAgentPackage(selectedHost.id)
+      message.success('Windows 离线 Agent 安装脚本已下载')
     } catch (error) {
-      message.error(getErrorMessage(error, '操作失败，请查看 Agent 任务日志'))
-      if (selectedHost?.id) await loadHostDetail(selectedHost.id)
+      message.error(getErrorMessage(error, '离线 Agent 安装脚本下载失败'))
     } finally {
-      setCredentialLoading(false)
+      setOfflinePackageLoading(false)
     }
   }
 
-  function serviceCredentialAction(action: 'startService' | 'stopService', service: HostServiceItem) {
-    setSelectedService(service)
-    setCredentialAction(action)
+  async function submitAgentUpdate() {
+    if (!selectedHost) return
+    setAgentUpdateLoading(true)
+    try {
+      const result = await queueAgentUpdate(selectedHost.id)
+      if (result?.queued.length) {
+        message.success(`已下发 Agent 更新任务，目标版本 ${result.targetVersion}`)
+      } else {
+        message.info(result?.skipped[0]?.reason || '未下发 Agent 更新任务')
+      }
+    } catch (error) {
+      message.error(getErrorMessage(error, 'Agent 更新任务下发失败'))
+    } finally {
+      setAgentUpdateLoading(false)
+    }
   }
 
   async function submitMaintenance(values: Parameters<typeof setHostMaintenance>[1]) {
@@ -157,34 +142,28 @@ export default function HostDetail() {
             {selectedHost.status === '纳管中' ? <Tag color={lifecycleStatusColor[selectedHost.status]}>纳管中</Tag> : null}
           </Space>
           <Space wrap>
-            <PermissionGate permission={PERMISSIONS.HOSTS_MANAGE}>
-              <Button icon={<ReloadOutlined />} onClick={() => setCredentialAction('refreshInfo')}>刷新主机信息</Button>
-            </PermissionGate>
             <PermissionGate permission={PERMISSIONS.HOSTS_AGENT}>
-              <Button onClick={() => setCredentialAction('pullMetrics')}>拉取指标</Button>
+              <Popconfirm
+                title="更新 Agent？"
+                description="通过当前在线 Agent 自更新，不需要主机密码；老版本 Windows Agent 可能需要先执行一次离线脚本。"
+                onConfirm={submitAgentUpdate}
+              >
+                <Button icon={<SyncOutlined />} loading={agentUpdateLoading}>更新 Agent</Button>
+              </Popconfirm>
             </PermissionGate>
-            <PermissionGate permission={PERMISSIONS.HOSTS_AGENT}>
-              <Button onClick={() => setCredentialAction('autoPull')}>{selectedHost.pullCredential?.enabled ? '更新自动 Pull 凭据' : '启用自动 Pull'}</Button>
-            </PermissionGate>
-            {selectedHost.pullCredential?.enabled ? (
+            {selectedHost.os === 'Windows' ? (
               <PermissionGate permission={PERMISSIONS.HOSTS_AGENT}>
-                <Button onClick={async () => {
-                  await disableHostPullCredential(selectedHost.id)
-                  message.success('已停用自动 Pull')
-                }}>停用自动 Pull</Button>
+                <Popconfirm
+                  title="下载 Windows 离线安装脚本？"
+                  description="下载不会影响现有 Agent；在目标主机以管理员运行脚本时才会重新登记 Agent Token。"
+                  onConfirm={downloadOfflinePackage}
+                >
+                  <Button icon={<DownloadOutlined />} loading={offlinePackageLoading}>离线安装脚本</Button>
+                </Popconfirm>
               </PermissionGate>
             ) : null}
-            <PermissionGate permission={PERMISSIONS.HOSTS_AGENT}>
-              <Button icon={<ToolOutlined />} onClick={() => setCredentialAction('reinstall')}>重新安装 Agent</Button>
-            </PermissionGate>
-            <PermissionGate permission={PERMISSIONS.HOSTS_AGENT}>
-              <Button icon={<ReloadOutlined />} onClick={() => setCredentialAction('restart')}>重启 Agent</Button>
-            </PermissionGate>
             <PermissionGate permission={PERMISSIONS.HOSTS_MANAGE}>
               {selectedHost.maintenance.active ? <Button loading={maintenanceLoading} onClick={exitMaintenance}>退出维护</Button> : <Button onClick={() => setMaintenanceOpen(true)}>进入维护</Button>}
-            </PermissionGate>
-            <PermissionGate permission={PERMISSIONS.HOSTS_MANAGE}>
-              <Button onClick={() => remanageHost(selectedHost.id)}>重新纳管</Button>
             </PermissionGate>
             <PermissionGate permission={PERMISSIONS.HOSTS_DELETE}>
               <Popconfirm title="确认删除该主机？" description="删除后会返回主机列表，并记录审计日志。" onConfirm={async () => { await deleteHost(selectedHost.id); navigate('/hosts') }}>
@@ -200,7 +179,16 @@ export default function HostDetail() {
           showIcon
           type="warning"
           message="主机维护中：关联告警不会创建或外发"
-          description={`${selectedHost.maintenance.reason || '未填写原因'}${selectedHost.maintenance.until ? `；截止 ${new Date(selectedHost.maintenance.until).toLocaleString('zh-CN', { hour12: false })}` : '；手动结束'}`}
+          description={`${selectedHost.maintenance.reason || '未填写原因'}${selectedHost.maintenance.until ? `；截止 ${formatTime(selectedHost.maintenance.until)}` : '；手动结束'}`}
+        />
+      ) : null}
+
+      {offlineInstallPending ? (
+        <Alert
+          showIcon
+          type="info"
+          message="Windows Agent 等待离线安装"
+          description="这台主机未保存 WinRM 密码，不会有平台后台安装任务；请下载离线安装脚本，并在目标 Windows 上以管理员身份运行。"
         />
       ) : null}
 
@@ -231,19 +219,10 @@ export default function HostDetail() {
         <Col xs={24} xl={10}>
           <Card title="Agent 状态">
             <Descriptions bordered column={1} size="small">
-              <Descriptions.Item label="状态"><Tag color={agentColor[selectedHost.agentStatus]}>{selectedHost.agentStatus}</Tag></Descriptions.Item>
+              <Descriptions.Item label="状态"><Tag color={offlineInstallPending ? 'gold' : agentColor[selectedHost.agentStatus]}>{offlineInstallPending ? '待离线安装' : selectedHost.agentStatus}</Tag></Descriptions.Item>
               <Descriptions.Item label="版本">{selectedHost.agentVersion}</Descriptions.Item>
               <Descriptions.Item label="安装时间">{formatTime(selectedHost.agentInstalledAt)}</Descriptions.Item>
               <Descriptions.Item label="最后心跳">{formatTime(selectedHost.lastHeartbeat)}</Descriptions.Item>
-              <Descriptions.Item label="自动 Pull"><Tag color={selectedHost.pullCredential?.enabled ? 'green' : 'default'}>{selectedHost.pullCredential?.enabled ? '已启用' : '未启用'}</Tag></Descriptions.Item>
-              {selectedHost.pullCredential ? (
-                <>
-                  <Descriptions.Item label={`${transport} 账号`}>{selectedHost.pullCredential.sshUsername}:{selectedHost.pullCredential.sshPort}</Descriptions.Item>
-                  <Descriptions.Item label="Pull 间隔">{selectedHost.pullCredential.intervalSeconds} 秒</Descriptions.Item>
-                  <Descriptions.Item label="上次 Pull">{formatTime(selectedHost.pullCredential.lastPulledAt)}</Descriptions.Item>
-                  <Descriptions.Item label="Pull 错误">{selectedHost.pullCredential.lastError || '-'}</Descriptions.Item>
-                </>
-              ) : null}
             </Descriptions>
           </Card>
         </Col>
@@ -259,16 +238,27 @@ export default function HostDetail() {
       {showOrdinaryServices ? (
         <HostServicePanel
           services={hostServices}
-          onStart={(service) => serviceCredentialAction('startService', service)}
-          onStop={(service) => serviceCredentialAction('stopService', service)}
-          onDelete={async (service) => {
-            await deleteServiceRecord(selectedHost.id, service.id)
-            message.success('已删除平台服务记录；如果 Agent 后续仍上报该服务，记录会重新出现')
+          onStart={async (service) => {
+            await startService(selectedHost.id, service.id)
+            message.success('已下发服务启动任务，请查看 Agent 任务历史')
+          }}
+          onStop={async (service) => {
+            await stopService(selectedHost.id, service.id)
+            message.success('已下发服务停止任务，请查看 Agent 任务历史')
+          }}
+          onRestart={async (service) => {
+            await restartService(selectedHost.id, service.id)
+            message.success('已下发服务重启任务，请查看 Agent 任务历史')
+          }}
+          onIgnore={async (service) => {
+            await ignoreServiceRecord(selectedHost.id, service.id)
+            message.success('已忽略该服务；后续 Agent 上报不会再展示或触发服务告警')
           }}
         />
       ) : null}
       <HostContainerPanel containers={hostContainers} />
       {showOrdinaryServices ? <HostServiceEventPanel events={serviceEvents} /> : null}
+      <HostLogCollectionStatusPanel status={hostLogCollectionStatus} />
       <Card title="异常日志">
         <Space>
           <Typography.Text type="secondary">最近已采集 {hostLogs.length} 条异常日志，完整查询和筛选请进入日志查询。</Typography.Text>
@@ -278,15 +268,6 @@ export default function HostDetail() {
       <AgentJobPanel jobs={agentJobs} />
       <HostAuditLogPanel logs={hostAuditLogs.length ? hostAuditLogs : auditLogs} />
       <HostMaintenanceModal open={maintenanceOpen} host={selectedHost} loading={maintenanceLoading} onCancel={() => setMaintenanceOpen(false)} onSubmit={submitMaintenance} />
-      <AgentCredentialModal
-        open={Boolean(credentialAction)}
-        title={credentialAction === 'refreshInfo' ? '刷新主机信息凭据' : credentialAction === 'pullMetrics' ? '拉取主机指标凭据' : credentialAction === 'autoPull' ? '启用自动 Pull 凭据（加密保存）' : credentialAction === 'restart' ? '重启 Agent 凭据' : credentialAction === 'startService' ? `启动服务：${selectedService?.name || ''}` : credentialAction === 'stopService' ? `停止服务：${selectedService?.name || ''}` : '重新安装 Agent 凭据'}
-        host={selectedHost}
-        loading={credentialLoading}
-        showApiBaseUrl={credentialAction === 'reinstall'}
-        onCancel={() => setCredentialAction(null)}
-        onSubmit={submitCredentials}
-      />
     </Flex>
   )
 }

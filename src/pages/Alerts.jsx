@@ -29,6 +29,7 @@ export default function Alerts() {
   const {
     alerts,
     filters,
+    pagination,
     summary,
     noiseStats,
     suppressedAlerts,
@@ -39,6 +40,7 @@ export default function Alerts() {
     loadNoiseStats,
     loadSuppressedAlerts,
     setFilters,
+    changePage,
     diagnose,
     diagnosis,
     diagnosingId,
@@ -55,7 +57,7 @@ export default function Alerts() {
   useEffect(() => {
     const initialFilters = filtersFromSearchParams(searchParams)
     const store = useAlertStore.getState()
-    void Promise.all([store.load(initialFilters), store.refreshOverview(), store.loadSuppressedAlerts()])
+    void Promise.all([store.load({ ...initialFilters, page: 1 }), store.refreshOverview(), store.loadSuppressedAlerts()])
     const socket = getRealtimeSocket()
     const refresh = () => {
       const current = useAlertStore.getState()
@@ -111,6 +113,8 @@ export default function Alerts() {
                       onAcknowledge={acknowledge}
                       onResolve={resolve}
                       onDetail={openDetail}
+                      pagination={pagination}
+                      onPageChange={changePage}
                     />
                   </Spin>
                 </Card>

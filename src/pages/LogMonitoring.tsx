@@ -1,7 +1,7 @@
 import { BellOutlined, ClockCircleOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { Alert, AutoComplete, Button, Card, Checkbox, Col, Descriptions, Drawer, Flex, Form, Input, InputNumber, Modal, Popconfirm, Radio, Row, Select, Space, Statistic, Switch, Table, Tabs, Tag, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { useEffect, useMemo, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { createLogMonitorRule, deleteLogMonitorRule, evaluateLogMonitorRule, getLogServices, listLogMonitorAlerts, listLogMonitorRules, updateLogMonitorRule } from '../api/logs'
 import { queryHosts } from '../api/hosts'
 import CgiMonitorPanel from '../components/log-monitoring/CgiMonitorPanel'
@@ -12,6 +12,7 @@ import PermissionGate from '../components/auth/PermissionGate'
 import { PERMISSIONS } from '../config/permissions'
 import type { Host } from '../types/host'
 import type { LogMonitorAlertRecord, LogMonitorChannel, LogMonitorRule, LogMonitorRuleInput, LogMonitorTimeRange } from '../types/log'
+import { formatShanghaiTime } from '../utils/time'
 
 const levelColor: Record<string, string> = { ERROR: 'red', WARN: 'gold', INFO: 'blue', DEBUG: 'default' }
 const alertLevelColor: Record<string, string> = { 紧急: 'red', 严重: 'volcano', 警告: 'gold', 提示: 'blue' }
@@ -149,6 +150,8 @@ export default function LogMonitoring() {
   const [editingRule, setEditingRule] = useState<LogMonitorRule>()
   const [selectedRule, setSelectedRule] = useState<LogMonitorRule>()
   const [statusFilter, setStatusFilter] = useState<RuleStatusFilter>('all')
+  const [ruleSearch, setRuleSearch] = useState('')
+  const deferredRuleSearch = useDeferredValue(ruleSearch)
   const [form] = Form.useForm<RuleFormValues>()
   const hostScope = Form.useWatch('hostScope', form) ?? 'all'
 
@@ -176,11 +179,6 @@ export default function LogMonitoring() {
     triggered: alerts.length,
   }), [alerts.length, rules])
 
-  const filteredRules = useMemo(() => rules.filter((rule) => {
-    if (statusFilter === 'enabled') return rule.enabled
-    if (statusFilter === 'disabled') return !rule.enabled
-    return true
-  }), [rules, statusFilter])
 
   const hostOptions = hosts.map((host) => ({ label: `${host.ip} · ${host.hostname}`, value: host.id }))
   const groupOptions = Array.from(new Set(hosts.map((host) => host.group).filter(Boolean))).map((group) => ({ label: group, value: group }))
@@ -201,6 +199,35 @@ export default function LogMonitoring() {
     if (scope === 'group') return rule.hostGroup ? `主机组：${rule.hostGroup}` : '未选择主机组'
     return '全部主机'
   }
+
+  const filteredRules = useMemo(() => {
+    const keyword = deferredRuleSearch.trim().toLowerCase()
+    return rules.filter((rule) => {
+      if (statusFilter === 'enabled' && !rule.enabled) return false
+      if (statusFilter === 'disabled' && rule.enabled) return false
+      if (!keyword) return true
+      const hostScopeText = formatRuleHostScope(rule, true)
+      const haystack = [
+        rule.name,
+        rule.description,
+        rule.service,
+        rule.source,
+        rule.level,
+        rule.alertLevel,
+        rule.hostId,
+        rule.hostGroup,
+        hostScopeText,
+        ...rule.hostIds,
+        ...rule.hostIds.map((hostId) => hostLabelById[hostId]),
+        ...rule.keywords,
+        ...rule.notification.channels,
+        rule.notification.receivers,
+        rule.selfHealingBinding?.targetServiceName,
+        rule.selfHealingBinding?.serviceName,
+      ].filter(Boolean).join(' ').toLowerCase()
+      return haystack.includes(keyword)
+    })
+  }, [deferredRuleSearch, hostLabelById, rules, statusFilter])
 
   const renderMatchConditions = (rule: LogMonitorRule) => {
     const conditions = [
@@ -289,7 +316,7 @@ export default function LogMonitoring() {
     { title: '阈值', width: 130, render: (_, rule) => <Typography.Text>{rule.windowMinutes} 分钟 ≥ <Typography.Text strong>{rule.threshold}</Typography.Text> 次</Typography.Text> },
     { title: '周期', width: 260, render: (_, rule) => <Typography.Text type="secondary">{scheduleText(rule)}</Typography.Text> },
     { title: '通知', width: 170, render: (_, rule) => <Space wrap>{rule.notification.channels.map((channel) => <Tag key={channel} color={channel === '站内告警' ? 'blue' : 'purple'}>{channel}</Tag>)}</Space> },
-    { title: '触发', width: 120, render: (_, rule) => <Space direction="vertical" size={0}><Typography.Text strong>{rule.triggerCount} 次</Typography.Text><Typography.Text type="secondary">{rule.lastTriggeredAt ? new Date(rule.lastTriggeredAt).toLocaleString('zh-CN', { hour12: false }) : '未触发'}</Typography.Text></Space> },
+    { title: '触发', width: 120, render: (_, rule) => <Space direction="vertical" size={0}><Typography.Text strong>{rule.triggerCount} 次</Typography.Text><Typography.Text type="secondary">{rule.lastTriggeredAt ? formatShanghaiTime(rule.lastTriggeredAt) : '未触发'}</Typography.Text></Space> },
     {
       title: '操作',
       width: 220,
@@ -344,7 +371,17 @@ export default function LogMonitoring() {
               <Space direction="vertical" size="large" style={{ width: '100%' }}>
                 <Alert showIcon type="info" message="触发逻辑" description="调度器默认每 30 秒评估一次启用规则。规则命中时会检查冷却期，避免同一条件短时间重复刷屏；系统内置“所有 ERROR 日志告警”规则，会将 ERROR 级别日志写入报警中心。" />
                 <Card title="监控规则" extra={<Space><Radio.Group size="small" optionType="button" buttonStyle="solid" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} options={[{ label: `全部 ${stats.total}`, value: 'all' }, { label: `启用 ${stats.enabled}`, value: 'enabled' }, { label: `停用 ${stats.disabled}`, value: 'disabled' }]} /><Button icon={<ReloadOutlined />} onClick={load}>刷新</Button></Space>}>
-                  <Table rowKey="id" loading={loading} columns={columns} dataSource={filteredRules} pagination={{ pageSize: 8 }} rowClassName={(rule) => rule.enabled ? '' : 'monitor-rule-disabled-row'} />
+                  <Flex justify="space-between" align="center" gap="middle" wrap style={{ marginBottom: 16 }}>
+                    <Input.Search
+                      allowClear
+                      placeholder="搜索规则名/关键字/主机/IP/来源/服务"
+                      value={ruleSearch}
+                      onChange={(event) => setRuleSearch(event.target.value)}
+                      style={{ maxWidth: 420 }}
+                    />
+                    <Typography.Text type="secondary">显示 {filteredRules.length}/{rules.length}</Typography.Text>
+                  </Flex>
+                  <Table rowKey="id" loading={loading} columns={columns} dataSource={filteredRules} pagination={{ pageSize: 8 }} rowClassName={(rule) => rule.enabled ? '' : 'monitor-rule-disabled-row'} locale={{ emptyText: ruleSearch ? '没有匹配的日志监控规则' : '暂无日志监控规则' }} />
                 </Card>
                 <Card title="最近触发记录">
                   <Table
@@ -353,7 +390,7 @@ export default function LogMonitoring() {
                     dataSource={alerts}
                     pagination={{ pageSize: 6 }}
                     columns={[
-                      { title: '时间', dataIndex: 'createdAt', width: 190, render: (value) => new Date(value).toLocaleString('zh-CN', { hour12: false }) },
+                      { title: '时间', dataIndex: 'createdAt', width: 190, render: (value) => formatShanghaiTime(value) },
                       { title: '规则', dataIndex: 'ruleId', render: (ruleId) => rules.find((rule) => rule.id === ruleId)?.name || ruleId },
                       { title: '告警ID', dataIndex: 'alertId', render: (value) => <Typography.Text code>{value}</Typography.Text> },
                       { title: '命中次数', dataIndex: 'matchedCount', width: 120, render: (value) => <Typography.Text strong>{value}</Typography.Text> },
@@ -487,7 +524,7 @@ export default function LogMonitoring() {
                 </Space>
               ) : '未绑定'}
             </Descriptions.Item>
-            <Descriptions.Item label="最近评估">{selectedRule.lastEvaluatedAt ? new Date(selectedRule.lastEvaluatedAt).toLocaleString('zh-CN', { hour12: false }) : '尚未评估'}</Descriptions.Item>
+            <Descriptions.Item label="最近评估">{selectedRule.lastEvaluatedAt ? formatShanghaiTime(selectedRule.lastEvaluatedAt) : '尚未评估'}</Descriptions.Item>
           </Descriptions>
         )}
       </Modal>

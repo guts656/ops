@@ -1,5 +1,6 @@
 import type { Prisma } from '../../src/generated/prisma/client'
 import { prisma } from '../db/prisma'
+import { shanghaiTime } from '../utils/time'
 import { emitNotificationEvent } from './realtime'
 
 export type NotificationType = 'alert' | 'self_healing' | 'webhook' | 'system'
@@ -24,10 +25,10 @@ function toNotification(row: any) {
     content: row.content,
     entityType: row.entityType ?? undefined,
     entityId: row.entityId ?? undefined,
-    readAt: row.readAt?.toISOString?.(),
+    readAt: row.readAt ? shanghaiTime(row.readAt) : undefined,
     metadata: row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata : {},
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
+    createdAt: shanghaiTime(row.createdAt),
+    updatedAt: shanghaiTime(row.updatedAt),
   }
 }
 

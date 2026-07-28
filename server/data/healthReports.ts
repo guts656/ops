@@ -4,6 +4,7 @@ import type { Prisma } from '../../src/generated/prisma/client'
 import { prisma } from '../db/prisma'
 import { createNotification } from '../services/notificationService'
 import { sendMonitorNotifications } from '../services/outboundNotificationService'
+import { shanghaiTime } from '../utils/time'
 
 const SHANGHAI_TZ = 'Asia/Shanghai'
 const REPORT_DIR = join(process.cwd(), 'storage', 'health-reports')
@@ -180,7 +181,7 @@ function renderReportHtml(report: ReturnType<typeof toReport>) {
       <h1>${escapeHtml(report.title)}</h1>
       <p>${escapeHtml(report.summary)}</p>
       <div class="score">${report.healthScore}<small>/ 100 · ${escapeHtml(levelLabel(report.healthLevel))}</small></div>
-      <p class="muted">周期：${escapeHtml(dateText(new Date(report.periodStart)))} 至 ${escapeHtml(dateText(new Date(report.periodEnd)))} ｜ 生成：${escapeHtml(new Date(report.generatedAt).toLocaleString('zh-CN', { hour12: false }))}</p>
+      <p class="muted">周期：${escapeHtml(dateText(new Date(report.periodStart)))} 至 ${escapeHtml(dateText(new Date(report.periodEnd)))} ｜ 生成：${escapeHtml(shanghaiTime(new Date(report.generatedAt)))}</p>
     </div>
     <div class="card"><h2>健康度低的原因</h2><ul>${causes || '<li>本周未发现明显风险原因。</li>'}</ul></div>
     ${sections}

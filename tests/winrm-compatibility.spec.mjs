@@ -9,4 +9,9 @@ assert.match(source, /return Get-WmiObject \$className/, 'WinRM test connection 
 assert.match(source, /function localNtlmUsername\(username: string\)/, 'plain local Windows usernames should have an NTLM retry form')
 assert.match(source, /\[localNtlmUsername\(input\.username\), input\.username\]/, 'WinRM should try local NTLM before Basic for plain usernames')
 
+const agentSource = await readFile(new URL('../server/remote/agentInstaller.ts', import.meta.url), 'utf8')
+const metricsCommand = agentSource.match(/const windowsMetricsCommand = `([\s\S]*?)`/)?.[1] ?? ''
+assert.match(metricsCommand, /function Get-UptimeSeconds\(\$os\)/, 'Windows pull metrics should tolerate invalid WMI boot time values')
+assert.match(metricsCommand, /\$uptime = Get-UptimeSeconds \$os/, 'Windows pull metrics should use the safe uptime helper')
+
 console.log('winrm-compatibility-ok')

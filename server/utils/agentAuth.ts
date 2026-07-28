@@ -1,6 +1,7 @@
 import type { Request } from 'express'
 import { prisma } from '../db/prisma'
 import { verifyAgentToken } from './agentToken'
+import { shanghaiTime } from './time'
 
 function bearer(value: string | undefined) {
   const match = value?.match(/^Bearer\s+(.+)$/i)
@@ -19,5 +20,5 @@ export async function authenticateAgentHost(req: Request) {
 }
 
 export async function touchAgentHeartbeat(hostId: string) {
-  await prisma.host.update({ where: { id: hostId }, data: { status: '在线', agentStatus: '正常', lastHeartbeat: new Date().toLocaleString('zh-CN', { hour12: false }) } })
+  await prisma.host.update({ where: { id: hostId }, data: { status: '在线', agentStatus: '正常', lastHeartbeat: shanghaiTime(new Date()) } })
 }

@@ -1,6 +1,7 @@
 import { buildHostAuditHashChain } from '../utils/audit'
 import { prisma } from '../db/prisma'
 import type { HostAuditLog } from '../types/host'
+import { shanghaiDate, shanghaiTime } from '../utils/time'
 
 type AuditLogSource = 'system' | 'host'
 type ExportFormat = 'csv' | 'json'
@@ -60,7 +61,7 @@ export interface AuditExportTask {
 const exportTasks = new Map<string, AuditExportTask>()
 
 function formatDate(date: Date) {
-  return date.toLocaleString('zh-CN', { hour12: false })
+  return shanghaiTime(date)
 }
 
 function parseHostTime(value: string) {
@@ -227,7 +228,8 @@ function exportCsv(logs: UnifiedAuditLog[]) {
 export async function createAuditLogExportTask(format: ExportFormat, filters: AuditLogFilters) {
   const logs = (await getAllAuditLogs()).filter((log) => matchesFilters(log, filters))
   const id = `audit-export-${Date.now().toString(36)}`
-  const fileName = `audit-logs-${new Date().toISOString().slice(0, 10)}.${format}`
+  const now = new Date()
+  const fileName = `audit-logs-${shanghaiDate(now)}.${format}`
   const content = format === 'json' ? JSON.stringify(logs, null, 2) : exportCsv(logs)
   const task: AuditExportTask = {
     id,
@@ -235,8 +237,8 @@ export async function createAuditLogExportTask(format: ExportFormat, filters: Au
     format,
     fileName,
     downloadUrl: `/api/audit/logs/export/${id}/download`,
-    createdAt: new Date().toISOString(),
-    completedAt: new Date().toISOString(),
+    createdAt: shanghaiTime(now),
+    completedAt: shanghaiTime(now),
     content,
   }
   exportTasks.set(id, task)

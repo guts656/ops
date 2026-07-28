@@ -22,6 +22,7 @@ export interface HostResourceMonitorRule {
   hostGroup?: string
   metrics: HostResourceMetric[]
   threshold: number
+  durationMinutes: number
   cooldownMinutes: number
   alertLevel: HostResourceAlertLevel
   daysOfWeek: number[]
@@ -46,6 +47,7 @@ export interface HostResourceMonitorRuleInput {
   hostGroup?: string
   metrics?: HostResourceMetric[]
   threshold?: number
+  durationMinutes?: number
   cooldownMinutes?: number
   alertLevel?: HostResourceAlertLevel
   daysOfWeek?: number[]

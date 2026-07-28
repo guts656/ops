@@ -1,11 +1,16 @@
 import { prisma } from '../db/prisma';
+const shanghaiFormatter = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, hourCycle: 'h23' });
+function shanghaiTime(date) {
+    const parts = Object.fromEntries(shanghaiFormatter.formatToParts(date).map((part) => [part.type, part.value]));
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
 function buildRuleConditionText(rule) {
     return rule.conditions
         .map((condition) => `${condition.service}.${condition.metric} ${condition.operator} ${condition.threshold}（${condition.windowValue}${condition.windowUnit}）`)
         .join(` ${rule.logic} `);
 }
 function nowText() {
-    return new Date().toLocaleString('zh-CN', { hour12: false });
+    return shanghaiTime(new Date());
 }
 function toRule(rule) {
     const value = {

@@ -5,6 +5,7 @@ import { ingestAlert } from '../services/alertIngestionService'
 import { disableGeneratedMonitorSelfHealingBinding, normalizeAndValidateMonitorSelfHealingBinding, normalizeMonitorSelfHealingBinding, syncMonitorSelfHealingBinding } from '../services/monitorSelfHealingBinding'
 import { sendMonitorNotifications } from '../services/outboundNotificationService'
 import type { LogMonitorAlertRecord, LogMonitorNotification, LogMonitorRule, LogMonitorRuleInput, LogMonitorTimeRange } from '../types/log'
+import { getHostLogCollectionPaths } from './logCollectionRules'
 import { startOfShanghaiTodayUtc } from './logs'
 import { shanghaiTime } from '../utils/time'
 
@@ -18,6 +19,18 @@ type EvaluateResult = {
   sampleLogIds: string[]
   triggered: boolean
   skippedReason?: string
+}
+
+export type AgentLocalLogMonitorResult = {
+  ruleId: string
+  matchedCount: number
+  matchedKeywords?: string[]
+  matchedSources?: string[]
+  matchedFiles?: string[]
+  readLines?: number
+  windowStart?: Date
+  windowEnd?: Date
+  lastError?: string
 }
 
 const weekdayMap = [7, 1, 2, 3, 4, 5, 6]
@@ -196,6 +209,25 @@ function sourceWhere(source: string | undefined, date = new Date()): Prisma.AppL
   return value
 }
 
+function base64Text(value: string | undefined | null) {
+  return Buffer.from(value ?? '', 'utf8').toString('base64')
+}
+
+function looksLikeFileSource(value: string | undefined) {
+  const source = value?.trim()
+  if (!source || source === 'file') return false
+  return /^[a-zA-Z]:[\\/]/.test(source) || source.startsWith('\\\\') || source.startsWith('/')
+}
+
+function ruleAppliesToHost(rule: LogMonitorRule, host: { id: string; group: string }) {
+  const scope = rule.hostScope ?? (rule.hostId ? 'single' : 'all')
+  if (scope === 'all') return true
+  if (scope === 'single') return (rule.hostId || rule.hostIds[0]) === host.id
+  if (scope === 'multiple') return rule.hostIds.includes(host.id)
+  if (scope === 'group') return Boolean(rule.hostGroup && rule.hostGroup === host.group)
+  return false
+}
+
 function isRuleActive(rule: LogMonitorRule, date = new Date()) {
   const current = localDateParts(date)
   if (rule.daysOfWeek.length && !rule.daysOfWeek.includes(current.weekday)) return false
@@ -254,6 +286,19 @@ async function activeMaintenanceHostIds(hostIds: string[], date: Date) {
   const uniqueHostIds = Array.from(new Set(hostIds.filter(Boolean)))
   const entries = await Promise.all(uniqueHostIds.map(async (hostId) => [hostId, await isHostInMaintenance(hostId, date)] as const))
   return entries.filter(([, active]) => active).map(([hostId]) => hostId)
+}
+
+function hostIdWhere(hostIds: string[]): Prisma.AppLogWhereInput['hostId'] | undefined {
+  const uniqueHostIds = Array.from(new Set(hostIds.filter(Boolean)))
+  if (!uniqueHostIds.length) return undefined
+  return uniqueHostIds.length === 1 ? uniqueHostIds[0] : { in: uniqueHostIds }
+}
+
+async function centralLogHostIds(hostIds: string[]) {
+  const uniqueHostIds = Array.from(new Set(hostIds.filter(Boolean)))
+  if (!uniqueHostIds.length) return []
+  const hosts = await prisma.host.findMany({ where: { id: { in: uniqueHostIds }, os: { not: 'Windows' } }, select: { id: true } })
+  return hosts.map((host) => host.id)
 }
 
 async function createNoDataAlertForRule(rule: LogMonitorRule, hostFilter: RuleHostFilter, windowStart: Date, windowEnd: Date) {
@@ -352,9 +397,122 @@ async function createAlertForRule(rule: LogMonitorRule, matchedCount: number, ma
   ])
 }
 
+async function createLocalMonitorAlertForRule(rule: LogMonitorRule, host: { id: string; ip: string; hostname: string }, result: AgentLocalLogMonitorResult, windowStart: Date, windowEnd: Date) {
+  const matchedKeywords = Array.from(new Set((result.matchedKeywords ?? []).filter(Boolean))).slice(0, 20)
+  const matchedSources = Array.from(new Set([...(result.matchedSources ?? []), ...(result.matchedFiles ?? [])].filter(Boolean))).slice(0, 10)
+  const service = rule.service || host.hostname || host.ip || targetText(rule)
+  const sourceSummary = matchedSources.length ? matchedSources.join(', ') : rule.source || 'local files'
+  const keywordSummary = matchedKeywords.length ? matchedKeywords.join(', ') : (rule.keywords.length ? rule.keywords.join(', ') : rule.level || 'matched condition')
+  const content = [
+    `Windows Agent local log monitor matched rule "${rule.name}".`,
+    '',
+    `Host: ${host.ip}(${host.hostname || host.id})`,
+    `Condition: ${keywordSummary}`,
+    `Matched count: ${result.matchedCount}`,
+    `Threshold: ${rule.threshold}`,
+    `Window: ${shanghaiTime(windowStart)} ~ ${shanghaiTime(windowEnd)}`,
+    `Source: ${sourceSummary}`,
+    '',
+    'Raw log content is intentionally not uploaded. Please inspect the source file on the Windows host when details are needed.',
+  ].join('\n')
+  const notificationResults = await sendMonitorNotifications({ ruleNotification: rule.notification, content: `[${rule.alertLevel}] ${rule.name}\n${content}` })
+  const alertResult = await ingestAlert({
+    level: rule.alertLevel,
+    time: shanghaiTime(windowEnd),
+    service,
+    title: rule.name,
+    content,
+    owner: rule.notification.receivers || 'Windows Agent',
+    source: 'Windows Agent local log monitor',
+    relatedType: 'log_monitor_rule',
+    relatedId: rule.id,
+    fingerprint: `windows-local-log-monitor:${rule.id}:${host.id}`,
+    outboundNotification: { channels: ['绔欏唴鍛婅'] },
+    metadata: {
+      ruleId: rule.id,
+      ruleName: rule.name,
+      hostId: host.id,
+      sourceHostId: host.id,
+      hostIp: host.ip,
+      hostname: host.hostname,
+      matchedCount: result.matchedCount,
+      matchedKeywords,
+      matchedSources,
+      readLines: result.readLines ?? 0,
+      localOnly: true,
+      rawLogUploaded: false,
+      windowStart: windowStart.toISOString(),
+      windowEnd: windowEnd.toISOString(),
+      notificationResults,
+    },
+  })
+
+  await prisma.$transaction([
+    prisma.logMonitorRule.update({ where: { id: rule.id }, data: { lastTriggeredAt: windowEnd, lastEvaluatedAt: windowEnd, triggerCount: { increment: 1 } } }),
+    ...(alertResult.alert ? [prisma.logMonitorAlert.create({ data: { ruleId: rule.id, alertId: alertResult.alert.id, matchedCount: result.matchedCount, windowStart, windowEnd, matchedKeywords, sampleLogIds: [], notificationResults } })] : []),
+  ])
+  return alertResult.alert
+}
+
 export async function listLogMonitorRules() {
   const rules = await prisma.logMonitorRule.findMany({ orderBy: { createdAt: 'desc' } })
   return rules.map(toRule)
+}
+
+export async function getAgentLocalLogMonitorConfig(hostId: string) {
+  const host = await prisma.host.findUnique({ where: { id: hostId }, select: { id: true, group: true } })
+  if (!host) return { mode: 'local_monitor', paths: [], rulesText: '' }
+  const [paths, rows] = await Promise.all([
+    getHostLogCollectionPaths(hostId),
+    prisma.logMonitorRule.findMany({ where: { enabled: true }, orderBy: { createdAt: 'asc' } }),
+  ])
+  const rules = rows.map(toRule).filter((rule) => ruleAppliesToHost(rule, host))
+  const sourcePaths = rules.map((rule) => rule.source).filter(looksLikeFileSource) as string[]
+  const localPaths = Array.from(new Set([...paths, ...sourcePaths].map((path) => path.trim()).filter(Boolean))).slice(0, 50)
+  const rulesText = rules.map((rule) => [
+    rule.id,
+    String(rule.threshold),
+    rule.level ?? '',
+    base64Text(rule.source),
+    base64Text(rule.service),
+    rule.keywords.map(base64Text).join(','),
+  ].join('\t')).join('\n')
+  return { mode: 'local_monitor', rawLogUpload: false, paths: localPaths, rulesText }
+}
+
+export async function ingestAgentLocalLogMonitorResults(hostId: string, results: AgentLocalLogMonitorResult[], sampledAt = new Date()) {
+  const host = await prisma.host.findUnique({ where: { id: hostId }, select: { id: true, ip: true, hostname: true, group: true } })
+  if (!host) return { processed: 0, triggered: 0 }
+  const ruleIds = Array.from(new Set(results.map((result) => result.ruleId).filter(Boolean)))
+  if (!ruleIds.length) return { processed: 0, triggered: 0 }
+  const rows = await prisma.logMonitorRule.findMany({ where: { id: { in: ruleIds } } })
+  const rulesById = new Map(rows.map((row) => [row.id, toRule(row)]))
+  let processed = 0
+  let triggered = 0
+
+  for (const result of results) {
+    const rule = rulesById.get(result.ruleId)
+    if (!rule || !rule.enabled || !ruleAppliesToHost(rule, host)) continue
+    processed += 1
+    const windowEnd = result.windowEnd ?? sampledAt
+    const windowStart = result.windowStart ?? new Date(windowEnd.getTime() - rule.windowMinutes * 60_000)
+    if (!isRuleActive(rule, windowEnd) || inCooldown(rule, windowEnd)) {
+      await prisma.logMonitorRule.update({ where: { id: rule.id }, data: { lastEvaluatedAt: windowEnd } })
+      continue
+    }
+    const matchedCount = Math.max(0, Math.floor(Number(result.matchedCount || 0)))
+    if (matchedCount < rule.threshold) {
+      await prisma.logMonitorRule.update({ where: { id: rule.id }, data: { lastEvaluatedAt: windowEnd } })
+      continue
+    }
+    if (await isHostInMaintenance(host.id, windowEnd)) {
+      await prisma.logMonitorRule.update({ where: { id: rule.id }, data: { lastEvaluatedAt: windowEnd } })
+      continue
+    }
+    const alert = await createLocalMonitorAlertForRule(rule, host, { ...result, matchedCount }, windowStart, windowEnd)
+    if (alert) triggered += 1
+  }
+  return { processed, triggered }
 }
 
 export async function getLogMonitorRule(id: string) {
@@ -476,12 +634,14 @@ export async function evaluateLogMonitorRule(rule: LogMonitorRule, date = new Da
 
   if (matchedCount < rule.threshold) {
     if (hostFilter.targetHostIds?.length) {
-      const dataWhere: Prisma.AppLogWhereInput = { timestamp: { gte: windowStart, lte: date }, hostId: hostFilter.hostId }
+      const centralHostIds = await centralLogHostIds(hostFilter.targetHostIds)
+      if (!centralHostIds.length) return { rule, matchedCount, matchedKeywords, sampleLogIds: sampleLogs.map((log) => log.id), triggered: false, skippedReason: 'Windows 本地日志监控不再检查原始日志入库' }
+      const dataWhere: Prisma.AppLogWhereInput = { timestamp: { gte: windowStart, lte: date }, hostId: hostIdWhere(centralHostIds) }
       if (rule.source) dataWhere.source = sourceWhere(rule.source, date)
       if (rule.service) dataWhere.service = { equals: rule.service, mode: 'insensitive' }
       const dataCount = await prisma.appLog.count({ where: dataWhere })
       if (dataCount === 0) {
-        const alert = await createNoDataAlertForRule(rule, hostFilter, windowStart, date)
+        const alert = await createNoDataAlertForRule(rule, { ...hostFilter, hostId: dataWhere.hostId, targetHostIds: centralHostIds }, windowStart, date)
         return { rule, matchedCount, matchedKeywords, sampleLogIds: sampleLogs.map((log) => log.id), triggered: Boolean(alert), skippedReason: alert ? '日志采集无数据' : undefined }
       }
     }

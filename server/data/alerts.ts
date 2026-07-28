@@ -1,9 +1,10 @@
 import type { Prisma } from '../../src/generated/prisma/client'
 import { prisma } from '../db/prisma'
-import type { AlertFilters, AlertItem, AlertSummary, CreateAlertInput } from '../types/alert'
+import type { AlertFilters, AlertItem, AlertPage, AlertSummary, CreateAlertInput } from '../types/alert'
 import { ingestAlert, toAlertItem } from '../services/alertIngestionService'
 import { getNoiseReductionStats, listSuppressedAlerts, suppressFingerprint, unsuppressFingerprint } from '../services/alertNoiseReductionService'
 import { emitAlertEvent } from '../services/realtime'
+import { shanghaiTime, startOfShanghaiDayUtc } from '../utils/time'
 
 const levels: AlertItem['level'][] = ['紧急', '严重', '警告', '提示']
 const statuses: AlertItem['status'][] = ['待处理', '处理中', '已解决']
@@ -11,13 +12,11 @@ const statuses: AlertItem['status'][] = ['待处理', '处理中', '已解决']
 const defaultDiagnosis = (alert: AlertItem) => `AI 诊断结果：${alert.service} 的「${alert.title || alert.content}」建议优先检查最近发布、上游依赖健康度和资源水位。建议操作：1）查看服务日志关键错误；2）比对近 30 分钟 QPS 与错误率；3）必要时执行回滚或扩容。`
 
 function nowText() {
-  return new Date().toLocaleString('zh-CN', { hour12: false })
+  return shanghaiTime(new Date())
 }
 
 function startOfToday() {
-  const date = new Date()
-  date.setHours(0, 0, 0, 0)
-  return date
+  return startOfShanghaiDayUtc(new Date())
 }
 
 function boolFilter(value: boolean | undefined) {
@@ -55,17 +54,74 @@ function queryWhere(filters: AlertFilters): Prisma.AlertWhereInput {
   }
 }
 
-export async function queryAlerts(filters: AlertFilters) {
-  const alerts = await prisma.alert.findMany({
-    where: queryWhere(filters),
-    orderBy: { createdAt: 'desc' },
+function metadataObject(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function pushHostId(ids: Set<string>, value: unknown) {
+  if (typeof value === 'string' && value.trim()) ids.add(value.trim())
+}
+
+function hostIdsFromAlert(alert: { metadata: unknown; relatedType?: string | null; relatedId?: string | null }) {
+  const ids = new Set<string>()
+  const metadata = metadataObject(alert.metadata)
+  pushHostId(ids, metadata.hostId)
+  pushHostId(ids, metadata.sourceHostId)
+  pushHostId(ids, metadata.probeHostId)
+  if (Array.isArray(metadata.hostIds)) {
+    for (const hostId of metadata.hostIds) pushHostId(ids, hostId)
+  }
+  if (alert.relatedType === 'host') pushHostId(ids, alert.relatedId)
+  return Array.from(ids)
+}
+
+async function enrichAlertHosts(alerts: Awaited<ReturnType<typeof prisma.alert.findMany>>) {
+  const alertItems = alerts.map(toAlertItem)
+  const hostIds = Array.from(new Set(alerts.flatMap(hostIdsFromAlert)))
+  if (!hostIds.length) return alertItems
+
+  const hosts = await prisma.host.findMany({
+    where: { id: { in: hostIds } },
+    select: { id: true, ip: true, hostname: true, tags: true, group: true },
   })
-  return alerts.map(toAlertItem)
+  const hostById = new Map(hosts.map((host) => [host.id, host]))
+  return alertItems.map((item, index) => {
+    const targets = hostIdsFromAlert(alerts[index])
+      .map((hostId) => hostById.get(hostId))
+      .filter((host): host is NonNullable<typeof host> => Boolean(host))
+    if (!targets.length) return item
+    return {
+      ...item,
+      hostTargets: targets.map((host) => ({
+        id: host.id,
+        ip: host.ip,
+        hostname: host.hostname,
+        tags: Array.isArray(host.tags) ? host.tags : [],
+        group: host.group || undefined,
+      })),
+    }
+  })
+}
+
+export async function queryAlerts(filters: AlertFilters): Promise<AlertPage> {
+  const page = Math.max(1, filters.page ?? 1)
+  const pageSize = Math.min(100, Math.max(1, filters.pageSize ?? 20))
+  const where = queryWhere(filters)
+  const [total, alerts] = await Promise.all([
+    prisma.alert.count({ where }),
+    prisma.alert.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+  ])
+  return { data: await enrichAlertHosts(alerts), page, pageSize, total }
 }
 
 export async function getAlert(id: string) {
   const alert = await prisma.alert.findUnique({ where: { id } })
-  return alert ? toAlertItem(alert) : undefined
+  return alert ? (await enrichAlertHosts([alert]))[0] : undefined
 }
 
 export async function createAlert(input: CreateAlertInput, operator: string) {

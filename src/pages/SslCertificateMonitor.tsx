@@ -7,6 +7,7 @@ import { checkSslCertificateMonitor, createSslCertificateMonitor, deleteSslCerti
 import PermissionGate from '../components/auth/PermissionGate'
 import { PERMISSIONS } from '../config/permissions'
 import type { SslCertificateChannel, SslCertificateHistory, SslCertificateMonitor, SslCertificateMonitorInput, SslCertificatePlatformLevel, SslCertificateStatus } from '../types/sslCertificate'
+import { formatShanghaiTime } from '../utils/time'
 
 const statusLabels: Record<SslCertificateStatus, string> = {
   normal: '正常',
@@ -37,9 +38,7 @@ type FormValues = Omit<SslCertificateMonitorInput, 'notification'> & {
 }
 
 function formatTime(value?: string) {
-  if (!value) return '-'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+  return formatShanghaiTime(value)
 }
 
 function normalizeThresholds(value?: Array<number | string>) {
