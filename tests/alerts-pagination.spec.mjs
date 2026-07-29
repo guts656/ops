@@ -21,7 +21,8 @@ assert.match(route, /res\.json\(await queryAlerts\(filters\)\)/, 'alerts route s
 assert.match(data, /prisma\.alert\.count\(\{\s*where\s*\}\)/, 'queryAlerts should count total alerts')
 assert.match(data, /skip:\s*\(page - 1\) \* pageSize/, 'queryAlerts should use skip for server-side pagination')
 assert.match(data, /take:\s*pageSize/, 'queryAlerts should use take for server-side pagination')
-assert.match(data, /return \{ data: alerts\.map\(toAlertItem\), page, pageSize, total \}/, 'queryAlerts should return page metadata')
+assert.match(data, /return \{ data: await enrichAlertHosts\(alerts\), page, pageSize, total \}/, 'queryAlerts should return page metadata with host target enrichment')
+assert.match(data, /select: \{ id: true, ip: true, hostname: true, tags: true, group: true \}/, 'alert host enrichment should load tags and group')
 
 assert.match(api, /Promise<AlertPage>/, 'frontend API should expose the paged alert response')
 assert.match(store, /pagination:\s*defaultPagination/, 'alert store should keep pagination state')

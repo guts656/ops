@@ -3,6 +3,7 @@ import { ZodError, z } from 'zod'
 import { enrollWindowsOfflineAgent, recordHostMetrics } from '../data/hosts.ts'
 import { ingestHostContainers } from '../data/hostContainers.ts'
 import { ingestHostServices, ingestServiceEvents } from '../data/hostServices.ts'
+import { completeWindowsBatchFileAgentResult } from '../data/batchJobs.ts'
 import { getHostLogCollectionPaths } from '../data/logCollectionRules.ts'
 import { upsertHostLogCollectionStatus } from '../data/logCollectionStatus.ts'
 import { getAgentLocalLogMonitorConfig, ingestAgentLocalLogMonitorResults } from '../data/logMonitorRules.ts'
@@ -150,6 +151,13 @@ const batchScriptJobResultSchema = z.object({
   stderr: z.string().optional(),
   exitCode: z.coerce.number().int().optional(),
 })
+const batchFileJobResultSchema = batchScriptJobResultSchema.extend({
+  remotePath: z.string().optional(),
+  bytes: z.coerce.number().int().min(0).optional(),
+  md5: z.string().regex(/^[a-fA-F0-9]{32}$/).optional(),
+  preview: z.string().optional(),
+  contentBase64: z.string().optional(),
+})
 const updateAgentJobResultSchema = z.object({
   success: z.boolean(),
   summary: z.string().optional(),
@@ -159,10 +167,18 @@ const updateAgentJobResultSchema = z.object({
 })
 
 type BatchScriptPayload = {
+  action?: 'run_script' | 'upload_file' | 'compare_file' | 'download_file'
   batchJobId?: string
   batchTargetId?: string
   scriptBase64?: string
   timeoutSeconds?: number
+  targetDirectory?: string
+  fileName?: string
+  remotePath?: string
+  fileContentBase64?: string
+  expectedMd5?: string
+  maxFileSize?: number
+  persistArtifact?: boolean
 }
 
 function actionForJobType(type: string) {
@@ -355,8 +371,9 @@ router.get('/hosts/:id/jobs/next', async (req, res, next) => {
     if ('status' in auth) return res.status(auth.status).json({ message: auth.message })
 
     await recoverStaleUpdateJobForHost(auth.host.id)
+    const supportedJobTypes = ['start_service', 'stop_service', 'restart_service', 'batch_run_script', 'batch_file_operation', 'update_agent']
     const job = await prisma.hostAgentJob.findFirst({
-      where: { hostId: auth.host.id, status: 'pending', type: { in: ['start_service', 'stop_service', 'restart_service', 'batch_run_script', 'update_agent'] } },
+      where: { hostId: auth.host.id, status: 'pending', type: { in: supportedJobTypes } },
       orderBy: { createdAt: 'asc' },
     })
     if (!job) return res.json({ job: null })
@@ -389,6 +406,18 @@ router.get('/hosts/:id/jobs/next', async (req, res, next) => {
       await prisma.batchJobTarget.updateMany({ where: { id: payload.batchTargetId, hostId: auth.host.id }, data: { status: 'running', summary: 'Windows Agent 已拉取脚本，正在执行' } })
       await touchAgentHeartbeat(auth.host.id)
       return res.json({ job: { id: job.id, type: job.type, action: 'run_script', batchJobId: payload.batchJobId, batchTargetId: payload.batchTargetId, scriptBase64: payload.scriptBase64, timeoutSeconds: payload.timeoutSeconds || 120 } })
+    }
+
+    if (job.type === 'batch_file_operation') {
+      const payload = parseBatchPayload(job)
+      if (!payload.batchJobId || !payload.batchTargetId || !payload.action || !payload.targetDirectory || !payload.fileName) {
+        await prisma.hostAgentJob.update({ where: { id: job.id }, data: { status: 'failed', summary: 'Windows 文件批处理 Agent 任务参数不完整', completedAt: new Date() } })
+        return res.json({ job: null })
+      }
+      await prisma.hostAgentJob.update({ where: { id: job.id }, data: { status: 'running', summary: 'Windows Agent 正在执行文件批处理' } })
+      await prisma.batchJobTarget.updateMany({ where: { id: payload.batchTargetId, hostId: auth.host.id }, data: { status: 'running', summary: 'Windows Agent 已拉取文件任务，正在执行' } })
+      await touchAgentHeartbeat(auth.host.id)
+      return res.json({ job: { id: job.id, type: job.type, ...payload } })
     }
 
     const action = actionForJobType(job.type)
@@ -472,6 +501,25 @@ router.post('/hosts/:id/jobs/:jobId/result', async (req, res, next) => {
         })
         await refreshBatchJobStatus(payload.batchJobId)
       }
+      await touchAgentHeartbeat(auth.host.id)
+      return res.json({ ok: true })
+    }
+
+    if (job.type === 'batch_file_operation') {
+      const result = batchFileJobResultSchema.parse(req.body)
+      const payload = parseBatchPayload(job) as Record<string, unknown>
+      const summary = result.summary || (result.success ? 'Windows 文件批处理执行成功' : 'Windows 文件批处理执行失败')
+      await prisma.hostAgentJob.update({
+        where: { id: job.id },
+        data: {
+          status: result.success ? 'success' : 'failed',
+          summary,
+          stdout: result.stdout || '',
+          stderr: result.stderr || '',
+          completedAt: now,
+        },
+      })
+      await completeWindowsBatchFileAgentResult(auth.host.id, payload, { ...result, summary })
       await touchAgentHeartbeat(auth.host.id)
       return res.json({ ok: true })
     }

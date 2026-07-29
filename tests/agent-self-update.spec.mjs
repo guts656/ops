@@ -11,7 +11,7 @@ const jobPanel = await readFile(new URL('../src/components/hosts/AgentJobPanel.t
 const hostDetail = await readFile(new URL('../src/pages/HostDetail.tsx', import.meta.url), 'utf8')
 const hostsPage = await readFile(new URL('../src/pages/Hosts.tsx', import.meta.url), 'utf8')
 
-assert.match(installer, /export const AGENT_VERSION = 'v2\.10\.12'/, 'agent version should be bumped for self-update rollout')
+assert.match(installer, /export const AGENT_VERSION = 'v2\.10\.13'/, 'agent version should be bumped for self-update rollout')
 assert.match(installer, /OPS_AGENT_SELF_UPDATE_MARKER/, 'agent packages should include a self-update validation marker')
 assert.match(installer, /export function buildAgentUpdatePackage/, 'server should build agent update packages')
 assert.match(installer, /def perform_update_job\(job\):/, 'linux agent should support self-update jobs')
@@ -25,7 +25,7 @@ assert.match(installer, /Start-Process -FilePath 'powershell\.exe'/, 'windows se
 assert.match(installer, /Move-Item -LiteralPath \$tempPath -Destination \$scriptPath -Force/, 'windows updater should replace the agent script after the current run exits')
 assert.match(installer, /Post-Json "\/api\/agent\/hosts\/\$\(.*?\)\/jobs\/\$\(.*?\)\/result" @\{ success = \$success;/, 'windows self-update should always post a job result instead of leaving scheduled jobs running')
 assert.match(agentRoutes, /\/hosts\/:id\/update-package/, 'agent API should expose an authenticated update package endpoint')
-assert.match(agentRoutes, /type: \{ in: \['start_service', 'stop_service', 'restart_service', 'batch_run_script', 'update_agent'\] \}/, 'agent polling should include update_agent jobs')
+assert.match(agentRoutes, /supportedJobTypes = \['start_service', 'stop_service', 'restart_service', 'batch_run_script', 'batch_file_operation', 'update_agent'\]/, 'agent polling should include update_agent and batch file jobs')
 assert.match(agentRoutes, /job\.type === 'update_agent'/, 'agent result endpoint should handle update_agent jobs')
 assert.match(agentRoutes, /Legacy Windows Agent self-update is disabled/, 'agent polling should fail legacy Windows self-update jobs instead of leaving them stuck')
 assert.match(agentRoutes, /WINDOWS_SELF_UPDATE_MIN_AGENT_VERSION = 'v2\.10\.11'/, 'windows self-update gate should allow v2.10.11+ agents to update to newer versions')

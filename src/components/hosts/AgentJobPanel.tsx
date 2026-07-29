@@ -3,7 +3,7 @@ import type { ColumnsType } from 'antd/es/table'
 import type { AgentJob } from '../../types/host'
 
 const statusColor = { pending: 'default', running: 'blue', success: 'green', failed: 'red' }
-const typeLabel = { test_connection: '测试连接', install_agent: '安装 Agent', reinstall_agent: '重新安装 Agent', restart_agent: '重启 Agent', update_agent: '更新 Agent', remanage: '重新纳管', refresh_host_info: '刷新主机信息', pull_host_metrics: '拉取主机指标', diagnose_agent_backend: '诊断 Agent 回连', repair_agent_backend_routes: '修复 Agent 回连路由', start_service: '启动服务', stop_service: '停止服务', restart_service: '重启服务', batch_run_script: '批处理脚本' }
+const typeLabel = { test_connection: '测试连接', install_agent: '安装 Agent', reinstall_agent: '重新安装 Agent', restart_agent: '重启 Agent', update_agent: '更新 Agent', remanage: '重新纳管', refresh_host_info: '刷新主机信息', pull_host_metrics: '拉取主机指标', diagnose_agent_backend: '诊断 Agent 回连', repair_agent_backend_routes: '修复 Agent 回连路由', start_service: '启动服务', stop_service: '停止服务', restart_service: '重启服务', batch_run_script: '批处理脚本', batch_file_operation: '批处理文件' }
 const transportLabel = { ssh: 'SSH', winrm: 'WinRM', agent: 'Agent' }
 
 export default function AgentJobPanel({ jobs = [] }: { jobs: AgentJob[] }) {

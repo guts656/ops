@@ -48,27 +48,29 @@ function isFileJob(type: BatchJobType) {
 }
 
 function canUseBatchHost(host: Host) {
-  return host.os === 'Linux' || Boolean(host.pullCredential?.enabled)
+  return host.os === 'Linux' || (host.os === 'Windows' && host.status === '在线' && host.agentStatus === '正常')
 }
 
 function batchHostLabel(host: Host) {
   if (host.os === 'Linux' && !host.pullCredential?.enabled) return `${host.ip} · ${host.hostname}（平台 SSH 密钥）`
+  if (host.os === 'Windows' && host.status === '在线' && host.agentStatus === '正常') return `${host.ip} · ${host.hostname}（Agent 通道）`
   if (host.pullCredential?.enabled) return `${host.ip} · ${host.hostname}`
-  return `${host.ip} · ${host.hostname}（未保存 WinRM Pull 凭据）`
+  return `${host.ip} · ${host.hostname}（Agent 未在线/未正常）`
 }
 
 function canUseBatchHostForType(host: Host, jobType: BatchJobType) {
   if (host.os === 'Linux') return true
-  if (jobType === 'run_script') return host.status === '在线' && host.agentStatus === '正常'
-  return Boolean(host.pullCredential?.enabled)
+  return host.status === '在线' && host.agentStatus === '正常'
 }
 
 function batchHostLabelForType(host: Host, jobType: BatchJobType) {
   if (host.os === 'Linux' && !host.pullCredential?.enabled) return `${host.ip} / ${host.hostname}（平台 SSH 密钥）`
   if (host.os === 'Windows' && jobType === 'run_script' && host.status === '在线' && host.agentStatus === '正常') return `${host.ip} / ${host.hostname}（Agent 通道）`
+  if (host.os === 'Windows' && isFileJob(jobType) && host.status === '在线' && host.agentStatus === '正常') return `${host.ip} / ${host.hostname}（Agent 文件通道）`
   if (host.os === 'Windows' && jobType === 'run_script') return `${host.ip} / ${host.hostname}（Agent 未在线/未正常）`
+  if (host.os === 'Windows' && isFileJob(jobType)) return `${host.ip} / ${host.hostname}（Agent 未在线/未正常）`
   if (host.pullCredential?.enabled) return `${host.ip} / ${host.hostname}`
-  return `${host.ip} / ${host.hostname}（文件类任务需历史 WinRM Pull 凭据）`
+  return `${host.ip} / ${host.hostname}（不可用）`
 }
 
 function formatBytes(bytes?: number) {
@@ -246,7 +248,7 @@ export default function BatchJobs() {
         </div>
       </Card>
 
-      <Alert type="warning" showIcon message="批处理不会在 API 中传主机密码：Linux 默认使用平台 SSH 密钥；Windows 仅支持历史上已保存 WinRM Pull 凭据的主机。文件对比/下载仅支持小文件，平台会先校验大小并记录 MD5。" />
+      <Alert type="warning" showIcon message="批处理不会在 API 中传主机密码：Linux 默认使用平台 SSH 密钥；Windows 脚本、上传、下载、对比都走 Agent 通道。Windows 文件类任务需要目标 Agent 已升级到支持文件批处理的版本；文件对比/下载仅支持小文件，平台会先校验大小并记录 MD5。" />
 
       <Row gutter={[16, 16]}>
         <Col xs={24} md={6}><Card><Statistic title="任务总数" value={stats.total} prefix={<FileAddOutlined />} /></Card></Col>
@@ -270,7 +272,7 @@ export default function BatchJobs() {
               name="hostIds"
               label="目标主机"
               rules={[{ required: true, message: '请选择目标主机' }]}
-              extra={targetHosts.length && !selectableHosts.length ? (targetOs === 'Windows' ? (jobType === 'run_script' ? 'Windows 脚本批处理通过 Agent 通道执行，请确认目标主机在线且 Agent 正常。' : 'Windows 文件类批处理暂时仍需要历史 WinRM Pull 凭据；建议优先使用脚本任务。') : 'Linux 批处理默认使用平台 SSH 密钥，请确认目标机已安装平台公钥。') : undefined}
+              extra={targetHosts.length && !selectableHosts.length ? (targetOs === 'Windows' ? 'Windows 批处理通过 Agent 通道执行，请确认目标主机在线且 Agent 正常；文件类任务还需要先批量更新到新版 Agent。' : 'Linux 批处理默认使用平台 SSH 密钥，请确认目标机已安装平台公钥。') : undefined}
             >
               <Select
                 mode="multiple"

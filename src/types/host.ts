@@ -5,7 +5,7 @@ export type AuthType = '密码' | '密钥'
 export type AgentInstallMode = 'remote' | 'offline'
 export type BatchStatus = '等待中' | '处理中' | '成功' | '失败'
 export type HostAction = '新增主机' | '测试连接' | '编辑主机' | '删除主机' | '重新纳管' | '刷新主机信息' | '拉取主机指标' | '启用自动Pull' | '停用自动Pull' | '重新安装Agent' | '生成离线Agent包' | '重启Agent' | '更新Agent' | '诊断Agent回连' | '修复Agent回连路由' | '启动服务' | '停止服务' | '重启服务' | '删除服务记录' | '忽略服务' | '进入维护' | '退出维护' | '查看详情'
-export type AgentJobType = 'test_connection' | 'install_agent' | 'reinstall_agent' | 'restart_agent' | 'update_agent' | 'remanage' | 'refresh_host_info' | 'pull_host_metrics' | 'diagnose_agent_backend' | 'repair_agent_backend_routes' | 'start_service' | 'stop_service' | 'restart_service' | 'batch_run_script'
+export type AgentJobType = 'test_connection' | 'install_agent' | 'reinstall_agent' | 'restart_agent' | 'update_agent' | 'remanage' | 'refresh_host_info' | 'pull_host_metrics' | 'diagnose_agent_backend' | 'repair_agent_backend_routes' | 'start_service' | 'stop_service' | 'restart_service' | 'batch_run_script' | 'batch_file_operation'
 export type AgentJobTransport = 'ssh' | 'winrm' | 'agent'
 export type AgentJobStatus = 'pending' | 'running' | 'success' | 'failed'
 

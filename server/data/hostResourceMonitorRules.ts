@@ -7,7 +7,7 @@ import type { HostResourceMetric, HostResourceMonitorAlertRecord, HostResourceMo
 
 type RuleRow = NonNullable<Awaited<ReturnType<typeof prisma.hostResourceMonitorRule.findFirst>>>
 type AlertRow = NonNullable<Awaited<ReturnType<typeof prisma.hostResourceMonitorAlert.findFirst>>>
-type HostTarget = { id: string; ip: string; hostname: string; group: string; cpu: number; memory: number; disk: number }
+type HostTarget = { id: string; ip: string; hostname: string; group: string; tags: string[]; cpu: number; memory: number; disk: number }
 type SustainedMetricState = { matched: boolean; value: number; sampledAt: Date; windowStart?: Date; sampleCount?: number }
 
 const weekdayMap = [7, 1, 2, 3, 4, 5, 6]
@@ -170,6 +170,15 @@ function serviceText(host: HostTarget) {
   return `${host.hostname || host.ip} (${host.ip})`
 }
 
+function hostNameText(host: HostTarget) {
+  return host.hostname || host.ip
+}
+
+function hostTagText(host: HostTarget) {
+  const labels = (host.tags || []).filter(Boolean)
+  return labels.length ? labels.join('、') : '未设置'
+}
+
 async function getSustainedMetricState(rule: HostResourceMonitorRule, host: HostTarget, metric: HostResourceMetric, date: Date): Promise<SustainedMetricState> {
   const durationMinutes = Math.max(1, rule.durationMinutes ?? 1)
   if (durationMinutes <= 1) {
@@ -232,10 +241,11 @@ export async function listHostResourceMonitorAlerts(ruleId?: string) {
 async function triggerMetricAlert(rule: HostResourceMonitorRule, host: HostTarget, metric: HostResourceMetric, value: number, sampledAt: Date, state?: SustainedMetricState) {
   const label = metricLabels[metric]
   const durationMinutes = Math.max(1, rule.durationMinutes ?? 1)
+  const hostInfo = `${hostTagText(host)}--${host.ip}--${hostNameText(host)}`
   const content = durationMinutes > 1
-    ? `${host.hostname || host.ip} ${label} 使用率已持续 ${durationMinutes} 分钟不低于 ${rule.threshold}%，最新值 ${value}%。窗口：${nowText(state?.windowStart ?? new Date(sampledAt.getTime() - durationMinutes * 60_000))} ~ ${nowText(sampledAt)}。`
-    : `${host.hostname || host.ip} ${label} 使用率 ${value}%，达到阈值 ${rule.threshold}%。`
-  const notificationResults = await sendMonitorNotifications({ ruleNotification: rule.notification, content: `【${rule.alertLevel}】${rule.name}\n${content}\n主机：${serviceText(host)}\n时间：${nowText(sampledAt)}` })
+    ? `${hostInfo}；${label} 使用率已持续 ${durationMinutes} 分钟不低于 ${rule.threshold}%，最新值 ${value}%。窗口：${nowText(state?.windowStart ?? new Date(sampledAt.getTime() - durationMinutes * 60_000))} ~ ${nowText(sampledAt)}。`
+    : `${hostInfo}；${label} 使用率 ${value}%，达到阈值 ${rule.threshold}%。`
+  const notificationResults = await sendMonitorNotifications({ ruleNotification: rule.notification, content: `【${rule.alertLevel}】${rule.name}\n${content}\n时间：${nowText(sampledAt)}` })
   const result = await ingestAlert({
     level: rule.alertLevel,
     time: nowText(sampledAt),
@@ -248,7 +258,7 @@ async function triggerMetricAlert(rule: HostResourceMonitorRule, host: HostTarge
     relatedId: rule.id,
     fingerprint: `host-resource:${rule.id}:${host.id}:${metric}`,
     outboundNotification: { channels: ['站内告警'] },
-    metadata: { ruleId: rule.id, ruleName: rule.name, hostId: host.id, sourceHostId: host.id, hostname: host.hostname, ip: host.ip, metric, actualValue: value, threshold: rule.threshold, durationMinutes, windowStart: state?.windowStart?.toISOString(), sampleCount: state?.sampleCount, sampledAt: sampledAt.toISOString() },
+    metadata: { ruleId: rule.id, ruleName: rule.name, hostId: host.id, sourceHostId: host.id, hostname: host.hostname, ip: host.ip, hostIp: host.ip, group: host.group, tags: host.tags || [], metric, actualValue: value, threshold: rule.threshold, durationMinutes, windowStart: state?.windowStart?.toISOString(), sampleCount: state?.sampleCount, sampledAt: sampledAt.toISOString() },
   })
   await prisma.$transaction([
     ...(result.alert ? [prisma.hostResourceMonitorAlert.create({ data: { ruleId: rule.id, alertId: result.alert.id, hostId: host.id, metric, value, threshold: rule.threshold, sampledAt, notificationResults } })] : []),
@@ -260,7 +270,7 @@ export async function evaluateHostResourceMonitorRule(rule: HostResourceMonitorR
   if (!rule.enabled) return { rule, evaluated: 0, triggered: 0, skippedReason: '规则已停用' }
   if (!isRuleActive(rule, date)) return { rule, evaluated: 0, triggered: 0, skippedReason: '不在生效周期内' }
   if (inCooldown(rule, date)) return { rule, evaluated: 0, triggered: 0, skippedReason: '处于冷却期' }
-  const hosts = await prisma.host.findMany({ select: { id: true, ip: true, hostname: true, group: true, cpu: true, memory: true, disk: true } })
+  const hosts = await prisma.host.findMany({ select: { id: true, ip: true, hostname: true, group: true, tags: true, cpu: true, memory: true, disk: true } })
   let evaluated = 0
   let triggered = 0
   for (const host of hosts) {
@@ -279,7 +289,7 @@ export async function evaluateHostResourceMonitorRule(rule: HostResourceMonitorR
 }
 
 export async function evaluateHostResourceMonitorRulesForHost(hostId: string, sampledAt = new Date()) {
-  const host = await prisma.host.findUnique({ where: { id: hostId }, select: { id: true, ip: true, hostname: true, group: true, cpu: true, memory: true, disk: true } })
+  const host = await prisma.host.findUnique({ where: { id: hostId }, select: { id: true, ip: true, hostname: true, group: true, tags: true, cpu: true, memory: true, disk: true } })
   if (!host) return []
   const rules = (await prisma.hostResourceMonitorRule.findMany({ where: { enabled: true } })).map(toRule)
   const results: Array<{ rule: HostResourceMonitorRule; evaluated: number; triggered: number; skippedReason?: string }> = []

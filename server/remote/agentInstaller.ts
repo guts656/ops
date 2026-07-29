@@ -2,7 +2,7 @@ import type { AgentBackendCandidateResult, AgentInstallOptions, AgentOperationRe
 import { runSshCommand, testSshConnection } from './ssh.ts'
 import { runWinrmCommand, testWinrmConnection, uploadWinrmFile } from './winrm.ts'
 
-export const AGENT_VERSION = 'v2.10.12'
+export const AGENT_VERSION = 'v2.10.13'
 
 function toOperationResult(result: RemoteCommandResult): AgentOperationResult {
   return { ...result, status: result.success ? 'success' : 'failed' }
@@ -1152,6 +1152,95 @@ function Invoke-BatchScriptJob($job) {
   }
   Post-Json "/api/agent/hosts/$($config.hostId)/jobs/$($job.id)/result" @{ success = $success; summary = $summary; stdout = $stdout; stderr = $stderr; exitCode = $exitCode }
 }
+function Get-FileMd5Hex($path) {
+  $stream = [System.IO.File]::OpenRead($path)
+  $md5 = $null
+  try {
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    $hash = $md5.ComputeHash($stream)
+    $parts = @()
+    foreach ($byte in $hash) { $parts += $byte.ToString('x2') }
+    return ($parts -join '')
+  } finally {
+    if ($md5) { $md5.Clear() }
+    $stream.Close()
+  }
+}
+function Get-FilePreview($bytes) {
+  if (-not $bytes -or $bytes.Length -eq 0) { return '' }
+  $length = [Math]::Min(4096, $bytes.Length)
+  $chunk = New-Object byte[] $length
+  [Array]::Copy($bytes, 0, $chunk, 0, $length)
+  for ($index = 0; $index -lt $chunk.Length; $index += 1) {
+    if ($chunk[$index] -eq 0) { return '' }
+  }
+  return Compact-Text ([Text.Encoding]::UTF8.GetString($chunk)) 4096
+}
+function Invoke-BatchFileJob($job) {
+  $action = [string]$job.action
+  $targetDirectory = [string]$job.targetDirectory
+  $fileName = [string]$job.fileName
+  $remotePath = [string]$job.remotePath
+  if (Is-Blank $remotePath) { $remotePath = Join-Path $targetDirectory $fileName }
+  $success = $false
+  $stdout = ''
+  $stderr = ''
+  $summary = ''
+  $exitCode = 1
+  $bytes = 0
+  $md5 = ''
+  $preview = ''
+  $contentBase64 = ''
+  $nl = [Environment]::NewLine
+  try {
+    if (Is-Blank $targetDirectory) { throw 'missing targetDirectory' }
+    if (Is-Blank $fileName) { throw 'missing fileName' }
+    if ($action -eq 'upload_file') {
+      $contentBase64 = [string]$job.fileContentBase64
+      if (Is-Blank $contentBase64) { throw 'missing file content' }
+      $content = [Convert]::FromBase64String($contentBase64)
+      New-Item -ItemType Directory -Force -Path $targetDirectory | Out-Null
+      [System.IO.File]::WriteAllBytes($remotePath, $content)
+      $bytes = $content.Length
+      $md5 = Get-FileMd5Hex $remotePath
+      $expectedMd5 = [string]$job.expectedMd5
+      if ((-not (Is-Blank $expectedMd5)) -and ($md5.ToLowerInvariant() -ne $expectedMd5.ToLowerInvariant())) {
+        throw "MD5 mismatch: expected $expectedMd5, actual $md5"
+      }
+      $success = $true
+      $exitCode = 0
+      $summary = "Uploaded file to $remotePath, bytes $bytes, MD5 $md5"
+      $stdout = "REMOTE_PATH=$remotePath" + $nl + "BYTES=$bytes" + $nl + "MD5=$md5"
+    } elseif ($action -eq 'compare_file' -or $action -eq 'download_file') {
+      if (-not [System.IO.File]::Exists($remotePath)) { throw "file not found: $remotePath" }
+      $info = New-Object System.IO.FileInfo($remotePath)
+      $limit = 1048576
+      try { if ($job.maxFileSize) { $limit = [int]$job.maxFileSize } } catch {}
+      if ($limit -lt 1) { $limit = 1 }
+      if ($limit -gt 5242880) { $limit = 5242880 }
+      if ($info.Length -gt $limit) { throw "file too large: $($info.Length) bytes, limit $limit" }
+      $content = [System.IO.File]::ReadAllBytes($remotePath)
+      $bytes = $content.Length
+      $md5 = Get-FileMd5Hex $remotePath
+      $preview = Get-FilePreview $content
+      if ($action -eq 'download_file') { $contentBase64 = [Convert]::ToBase64String($content) }
+      $success = $true
+      $exitCode = 0
+      $summary = "Read file $remotePath, bytes $bytes, MD5 $md5"
+      $stdout = "REMOTE_PATH=$remotePath" + $nl + "BYTES=$bytes" + $nl + "MD5=$md5"
+      if (-not (Is-Blank $preview)) { $stdout = $stdout + $nl + "PREVIEW:" + $nl + $preview }
+    } else {
+      throw "unsupported batch file action: $action"
+    }
+  } catch {
+    $success = $false
+    $stderr = [string]$_.Exception.Message
+    $summary = "Batch file operation failed: $stderr"
+  }
+  $payload = @{ success = $success; summary = $summary; stdout = $stdout; stderr = $stderr; exitCode = $exitCode; remotePath = $remotePath; bytes = $bytes; md5 = $md5; preview = $preview }
+  if ($action -eq 'download_file' -and $success -and -not (Is-Blank $contentBase64)) { $payload.contentBase64 = $contentBase64 }
+  Post-Json "/api/agent/hosts/$($config.hostId)/jobs/$($job.id)/result" $payload
+}
 function Set-AgentVersion($targetVersion) {
   $config.agentVersion = [string]$targetVersion
   [System.IO.File]::WriteAllText($configPath, (ConvertTo-OpsJson $config), [Text.Encoding]::UTF8)
@@ -1288,6 +1377,8 @@ function Process-ServiceJobs {
     if (-not $response -or -not $response.job) { return }
     if ($response.job.type -eq 'batch_run_script') {
       Invoke-BatchScriptJob $response.job
+    } elseif ($response.job.type -eq 'batch_file_operation') {
+      Invoke-BatchFileJob $response.job
     } elseif ($response.job.type -eq 'update_agent') {
       Invoke-AgentUpdateJob $response.job
     } else {

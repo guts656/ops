@@ -93,7 +93,6 @@ export default function AlertList({ alerts = [], showActions = false, diagnosing
                 <Typography.Text type="secondary">{item.time}</Typography.Text>
                 <Tag color={statusColor[item.status]}>{item.status}</Tag>
                 <HostTargetTags item={item} />
-                <HostTargetTags item={item} />
                 <Tag>{item.source || '平台'}</Tag>
                 {item.occurrenceCount > 1 && <Tag color="magenta">重复 {item.occurrenceCount} 次</Tag>}
                 {item.isSuppressed && <Tag color="purple">已抑制</Tag>}

@@ -6,7 +6,7 @@ const linuxSource = source.match(/cat >\/usr\/local\/bin\/ops-platform-agent <<'
 const windowsSource = source
 const windowsAgentSource = source.match(/@'\n([\s\S]*?)\n'@ \| Set-Content -Encoding UTF8 -Path \(Join-Path \$base 'ops-platform-agent\.ps1'\)/)?.[1] ?? ''
 
-assert.match(source, /export const AGENT_VERSION = 'v2\.10\.12'/, 'agent version should be bumped for reinstall verification')
+assert.match(source, /export const AGENT_VERSION = 'v2\.10\.13'/, 'agent version should be bumped for reinstall verification')
 assert.ok(windowsAgentSource, 'windows agent runtime script should be extractable from the installer template')
 assert.doesNotMatch(windowsAgentSource, /[^\x00-\x7F]/, 'windows agent runtime script should stay ASCII-only for legacy PowerShell encoding compatibility')
 assert.match(source, /def post_log_batches\(logs\):/, 'linux agent should upload logs in 100-row batches')
