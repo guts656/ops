@@ -12,6 +12,8 @@ Dockerfile
 logs
 *.log
 dist
+!dist
+!dist/**
 storage
 .claude
 OFFICE-TEST-settings.json

@@ -25,10 +25,9 @@ const actionSchema = z.object({
     cooldown: z.coerce.number().min(0).optional(),
 });
 const notificationSchema = z.object({
-    channels: z.array(z.enum(['钉钉', '企业微信', '邮件'])).default([]),
     receivers: z.string().default(''),
     template: z.string().default(''),
-});
+}).transform((value) => ({ ...value, channels: [] }));
 const ruleSchema = z.object({
     name: z.string().min(1),
     description: z.string().default(''),

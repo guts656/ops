@@ -7,8 +7,6 @@ import { requirePermission } from '../middleware/requirePermission'
 import { isValidSslDomain } from '../services/sslCertificateChecker'
 
 const notificationSchema = z.object({
-  channels: z.array(z.enum(['站内告警', '企业微信', '钉钉'])).min(1).max(3),
-  webhookUrl: z.string().url().optional().or(z.literal('')),
   receivers: z.string().max(200).optional(),
 }).optional()
 

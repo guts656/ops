@@ -15,6 +15,7 @@ const statusColor: Record<string, string> = { running: 'blue', success: 'green',
 const typeLabel: Record<BatchJobType, string> = { upload_file: '批量上传文件', run_script: '批量执行脚本', compare_file: '小文件对比', download_file: '小文件下载' }
 const MAX_UPLOAD_FILE_SIZE = 5 * 1024 * 1024
 const DEFAULT_FILE_READ_LIMIT = 1024 * 1024
+const WINDOWS_BATCH_FILE_MIN_AGENT_VERSION = 'v2.10.18'
 const targetStatusOrder: Record<string, number> = { failed: 0, running: 1, partial: 2, success: 3 }
 
 function outputText(value: string) {
@@ -47,6 +48,17 @@ function isFileJob(type: BatchJobType) {
   return type === 'upload_file' || type === 'compare_file' || type === 'download_file'
 }
 
+function isAgentVersionAtLeast(version: string, minimum: string) {
+  const current = version.match(/^v?(\d+)\.(\d+)\.(\d+)$/)?.slice(1).map(Number)
+  const target = minimum.match(/^v?(\d+)\.(\d+)\.(\d+)$/)?.slice(1).map(Number)
+  if (!current || !target) return false
+  for (let index = 0; index < target.length; index += 1) {
+    if (current[index] > target[index]) return true
+    if (current[index] < target[index]) return false
+  }
+  return true
+}
+
 function canUseBatchHost(host: Host) {
   return host.os === 'Linux' || (host.os === 'Windows' && host.status === '在线' && host.agentStatus === '正常')
 }
@@ -60,13 +72,18 @@ function batchHostLabel(host: Host) {
 
 function canUseBatchHostForType(host: Host, jobType: BatchJobType) {
   if (host.os === 'Linux') return true
-  return host.status === '在线' && host.agentStatus === '正常'
+  const agentReady = host.status === '在线' && host.agentStatus === '正常'
+  return agentReady && (!isFileJob(jobType) || isAgentVersionAtLeast(host.agentVersion, WINDOWS_BATCH_FILE_MIN_AGENT_VERSION))
 }
 
 function batchHostLabelForType(host: Host, jobType: BatchJobType) {
   if (host.os === 'Linux' && !host.pullCredential?.enabled) return `${host.ip} / ${host.hostname}（平台 SSH 密钥）`
   if (host.os === 'Windows' && jobType === 'run_script' && host.status === '在线' && host.agentStatus === '正常') return `${host.ip} / ${host.hostname}（Agent 通道）`
-  if (host.os === 'Windows' && isFileJob(jobType) && host.status === '在线' && host.agentStatus === '正常') return `${host.ip} / ${host.hostname}（Agent 文件通道）`
+  if (host.os === 'Windows' && isFileJob(jobType) && host.status === '在线' && host.agentStatus === '正常') {
+    return isAgentVersionAtLeast(host.agentVersion, WINDOWS_BATCH_FILE_MIN_AGENT_VERSION)
+      ? `${host.ip} / ${host.hostname}（Agent 文件通道）`
+      : `${host.ip} / ${host.hostname}（Agent ${host.agentVersion || '-'}，需升级到 ${WINDOWS_BATCH_FILE_MIN_AGENT_VERSION}+）`
+  }
   if (host.os === 'Windows' && jobType === 'run_script') return `${host.ip} / ${host.hostname}（Agent 未在线/未正常）`
   if (host.os === 'Windows' && isFileJob(jobType)) return `${host.ip} / ${host.hostname}（Agent 未在线/未正常）`
   if (host.pullCredential?.enabled) return `${host.ip} / ${host.hostname}`
@@ -97,6 +114,7 @@ export default function BatchJobs() {
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedJob, setSelectedJob] = useState<BatchJob>()
   const [fileList, setFileList] = useState<UploadFile[]>([])
+  const [selectedFile, setSelectedFile] = useState<File>()
   const [form] = Form.useForm<CreateBatchJobValues>()
   const jobType = Form.useWatch('type', form) ?? 'upload_file'
   const targetMode = Form.useWatch('targetMode', form) ?? 'hosts'
@@ -140,7 +158,7 @@ export default function BatchJobs() {
       let payload: CreateBatchJobValues = { ...values, targetMode: values.targetMode || 'hosts' }
       if (payload.targetMode === 'group') payload.hostIds = []
       if (values.type === 'upload_file') {
-        const originFile = fileList[0]?.originFileObj
+        const originFile = selectedFile ?? fileList[0]?.originFileObj
         if (!originFile) throw new Error('请上传文件')
         if (originFile.size > MAX_UPLOAD_FILE_SIZE) throw new Error('单个上传文件不能超过 5MB')
         payload = { ...payload, fileName: values.fileName || originFile.name, fileContentBase64: await fileToBase64(originFile) }
@@ -153,6 +171,7 @@ export default function BatchJobs() {
       setModalOpen(false)
       form.resetFields()
       setFileList([])
+      setSelectedFile(undefined)
       await load()
       setSelectedJob(job)
     } catch (error) {
@@ -261,7 +280,19 @@ export default function BatchJobs() {
         <Table rowKey="id" loading={loading} columns={jobColumns} dataSource={jobs} pagination={{ pageSize: 8 }} />
       </Card>
 
-      <Modal title="新建批处理" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={() => form.submit()} confirmLoading={submitting} width={820} destroyOnHidden>
+      <Modal
+        title="新建批处理"
+        open={modalOpen}
+        onCancel={() => {
+          setModalOpen(false)
+          setFileList([])
+          setSelectedFile(undefined)
+        }}
+        onOk={() => form.submit()}
+        confirmLoading={submitting}
+        width={820}
+        destroyOnHidden
+      >
         <Form form={form} layout="vertical" initialValues={{ type: 'upload_file', targetMode: 'hosts', targetOs: 'Linux', maxFileSize: DEFAULT_FILE_READ_LIMIT }} onFinish={submit}>
           <Form.Item name="name" label="任务名称" rules={[{ required: true, message: '请输入任务名称' }]}><Input placeholder="例如：批量对比配置文件" /></Form.Item>
           <Form.Item name="type" label="任务类型" rules={[{ required: true }]}><Radio.Group optionType="button" buttonStyle="solid" options={[{ label: '批量上传文件', value: 'upload_file' }, { label: '批量执行脚本', value: 'run_script' }, { label: '小文件对比', value: 'compare_file' }, { label: '小文件下载', value: 'download_file' }]} /></Form.Item>
@@ -302,11 +333,19 @@ export default function BatchJobs() {
                         message.error('单个上传文件不能超过 5MB')
                         return Upload.LIST_IGNORE
                       }
+                      setSelectedFile(file)
                       return false
                     }}
                     maxCount={1}
                     fileList={fileList}
-                    onChange={({ fileList }) => setFileList(fileList)}
+                    onChange={({ fileList: nextFileList }) => {
+                      setFileList(nextFileList)
+                      if (!nextFileList.length) setSelectedFile(undefined)
+                    }}
+                    onRemove={() => {
+                      setSelectedFile(undefined)
+                      return true
+                    }}
                   >
                     <Button icon={<UploadOutlined />}>选择文件</Button>
                   </Upload>

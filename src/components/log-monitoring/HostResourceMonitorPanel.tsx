@@ -7,7 +7,7 @@ import { getErrorMessage } from '../../api/http'
 import { PERMISSIONS } from '../../config/permissions'
 import type { Host } from '../../types/host'
 import type { HostResourceMetric, HostResourceMonitorAlertRecord, HostResourceMonitorRule, HostResourceMonitorRuleInput } from '../../types/hostResourceMonitor'
-import type { LogMonitorChannel, LogMonitorTimeRange } from '../../types/log'
+import type { LogMonitorTimeRange } from '../../types/log'
 import { formatShanghaiTime } from '../../utils/time'
 import PermissionGate from '../auth/PermissionGate'
 
@@ -28,8 +28,6 @@ const dayOptions = [
 interface RuleFormValues extends Omit<HostResourceMonitorRuleInput, 'holidays' | 'notification'> {
   holidaysText?: string
   notification?: {
-    channels?: LogMonitorChannel[]
-    webhookUrl?: string
     receivers?: string
   }
 }
@@ -47,9 +45,7 @@ function formatDate(value?: string) {
 }
 
 function toPayload(values: RuleFormValues): HostResourceMonitorRuleInput {
-  const notification = values.notification?.channels?.length
-    ? { channels: values.notification.channels, webhookUrl: values.notification.webhookUrl, receivers: values.notification.receivers }
-    : undefined
+  const notification = { receivers: values.notification?.receivers }
   const hostScope = values.hostScope ?? (values.hostId ? 'single' : 'all')
   const hostIds = Array.from(new Set((values.hostIds ?? []).filter(Boolean)))
   const hostTarget = hostScope === 'single'
@@ -92,7 +88,7 @@ function toFormValues(rule?: HostResourceMonitorRule): Partial<RuleFormValues> {
       daysOfWeek: [1, 2, 3, 4, 5, 6, 7],
       timeRanges: [{ start: '00:00', end: '23:59' }],
       holidayMode: 'ignore',
-      notification: { channels: ['站内告警'] },
+      notification: { receivers: '' },
     }
   }
   const hostScope = rule.hostScope ?? (rule.hostId ? 'single' : 'all')
@@ -246,7 +242,6 @@ export default function HostResourceMonitorPanel({ hosts }: { hosts: Host[] }) {
     { title: '指标', dataIndex: 'metrics', width: 170, render: (metrics: HostResourceMetric[]) => <Space wrap>{metrics.map((metric) => <Tag key={metric} color={metricColor[metric]}>{metricLabel[metric]}</Tag>)}</Space> },
     { title: '阈值', width: 170, render: (_, rule) => <Space direction="vertical" size={0}><Typography.Text>使用率 ≥ <Typography.Text strong>{rule.threshold}%</Typography.Text></Typography.Text><Typography.Text type="secondary">持续 {rule.durationMinutes ?? 1} 分钟</Typography.Text><Typography.Text type="secondary">冷却 {rule.cooldownMinutes} 分钟</Typography.Text></Space> },
     { title: '周期', width: 260, render: (_, rule) => <Typography.Text type="secondary">{scheduleText(rule)}</Typography.Text> },
-    { title: '通知', width: 170, render: (_, rule) => <Space wrap>{rule.notification.channels.map((channel) => <Tag key={channel} color={channel === '站内告警' ? 'blue' : 'purple'}>{channel}</Tag>)}</Space> },
     { title: '触发', width: 130, render: (_, rule) => <Space direction="vertical" size={0}><Typography.Text strong>{rule.triggerCount} 次</Typography.Text><Typography.Text type="secondary">{rule.lastTriggeredAt ? formatDate(rule.lastTriggeredAt) : '未触发'}</Typography.Text></Space> },
     {
       title: '操作',
@@ -292,7 +287,7 @@ export default function HostResourceMonitorPanel({ hosts }: { hosts: Host[] }) {
             { title: '当前值', dataIndex: 'value', width: 110, render: (value: number) => <Typography.Text strong>{value}%</Typography.Text> },
             { title: '阈值', dataIndex: 'threshold', width: 100, render: (value: number) => `${value}%` },
             { title: '告警ID', dataIndex: 'alertId', render: (value: string) => <Typography.Text code>{value}</Typography.Text> },
-            { title: '通知结果', dataIndex: 'notificationResults', render: (values: string[]) => values?.length ? values.join('；') : '站内告警' },
+            { title: '通知结果', dataIndex: 'notificationResults', render: (values: string[]) => values?.length ? values.join('；') : '无外部通知' },
           ]}
         />
       </Card>
@@ -351,11 +346,7 @@ export default function HostResourceMonitorPanel({ hosts }: { hosts: Host[] }) {
             <Col span={10}><Form.Item name="holidayMode" label="节假日策略"><Select options={[{ label: '不判断节假日', value: 'ignore' }, { label: '仅节假日生效', value: 'include' }, { label: '排除节假日', value: 'exclude' }]} /></Form.Item></Col>
             <Col span={14}><Form.Item name="holidaysText" label="节假日日期"><Input.TextArea rows={3} placeholder={'2026-10-01\n2026-10-02'} /></Form.Item></Col>
           </Row>
-          <Card size="small" title="通知配置">
-            <Form.Item name={['notification', 'channels']} label="通知渠道" rules={[{ required: true, message: '请选择通知渠道' }]}><Checkbox.Group options={['站内告警', '企业微信', '钉钉']} /></Form.Item>
-            <Form.Item name={['notification', 'webhookUrl']} label="企业微信/钉钉 Webhook" extra="可选覆盖；不填则使用设置页里的全局告警通知配置。"><Input placeholder="可选：填写后优先使用该规则自己的机器人 Webhook" /></Form.Item>
-            <Form.Item name={['notification', 'receivers']} label="负责人/接收人"><Input placeholder="例如：基础设施 SRE 值班群、张三" /></Form.Item>
-          </Card>
+          <Form.Item name={['notification', 'receivers']} label="告警负责人"><Input placeholder="例如：基础设施 SRE 值班组、张三" /></Form.Item>
         </Form>
       </Drawer>
 
@@ -370,7 +361,7 @@ export default function HostResourceMonitorPanel({ hosts }: { hosts: Host[] }) {
             <Descriptions.Item label="触发条件">任一选中指标使用率持续 {selectedRule.durationMinutes ?? 1} 分钟 ≥ {selectedRule.threshold}%</Descriptions.Item>
             <Descriptions.Item label="冷却期">{selectedRule.cooldownMinutes} 分钟</Descriptions.Item>
             <Descriptions.Item label="周期">{scheduleText(selectedRule)}</Descriptions.Item>
-            <Descriptions.Item label="通知">{selectedRule.notification.channels.join('、')}；{selectedRule.notification.receivers || '未指定接收人'}</Descriptions.Item>
+            <Descriptions.Item label="告警负责人">{selectedRule.notification.receivers || '未指定'}</Descriptions.Item>
             <Descriptions.Item label="最近评估">{formatDate(selectedRule.lastEvaluatedAt)}</Descriptions.Item>
             <Descriptions.Item label="最近触发">{selectedRule.lastTriggeredAt ? formatDate(selectedRule.lastTriggeredAt) : '未触发'}；累计 {selectedRule.triggerCount} 次</Descriptions.Item>
           </Descriptions>

@@ -1,13 +1,12 @@
-import type { CgiMonitorChannel } from './cgiMonitor'
-
 export interface OutboundChannelSetting {
   enabled: boolean
   webhookUrl?: string
   receivers?: string
+  keyword?: string
 }
 
 export interface OutboundNotificationSettings {
-  defaultChannels: CgiMonitorChannel[]
+  inApp: { enabled: boolean }
   dingTalk: OutboundChannelSetting
   weCom: OutboundChannelSetting
 }

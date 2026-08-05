@@ -8,10 +8,15 @@ export interface OutboundChannelSetting {
   enabled: boolean
   webhookUrl?: string
   receivers?: string
+  keyword?: string
+}
+
+export interface InAppNotificationSetting {
+  enabled: boolean
 }
 
 export interface OutboundNotificationSettings {
-  defaultChannels: OutboundNotificationChannel[]
+  inApp: InAppNotificationSetting
   dingTalk: OutboundChannelSetting
   weCom: OutboundChannelSetting
 }
@@ -19,13 +24,15 @@ export interface OutboundNotificationSettings {
 export const OUTBOUND_NOTIFICATION_SETTING_KEY = 'outboundNotifications'
 export const DASHBOARD_TRADING_SESSION_SETTING_KEY = 'dashboardTradingSessions'
 
+type OutboundProvider = 'dingTalk' | 'weCom'
+
+let legacyOutboundMigration: Promise<OutboundNotificationSettings> | undefined
+
 const defaultSettings: OutboundNotificationSettings = {
-  defaultChannels: ['站内告警'],
+  inApp: { enabled: true },
   dingTalk: { enabled: false, webhookUrl: '', receivers: '' },
   weCom: { enabled: false, webhookUrl: '', receivers: '' },
 }
-
-const allowedChannels = new Set<OutboundNotificationChannel>(['站内告警', '企业微信', '钉钉'])
 
 function text(value: unknown) {
   return typeof value === 'string' ? value.trim() : ''
@@ -37,25 +44,96 @@ function channelSetting(value: unknown): OutboundChannelSetting {
     enabled: Boolean(setting.enabled),
     webhookUrl: text(setting.webhookUrl),
     receivers: text(setting.receivers),
+    keyword: text(setting.keyword),
   }
 }
 
 export function normalizeOutboundNotificationSettings(value: unknown): OutboundNotificationSettings {
-  const raw = value && typeof value === 'object' && !Array.isArray(value) ? value as Partial<OutboundNotificationSettings> : {}
-  const defaultChannels = Array.isArray(raw.defaultChannels)
-    ? Array.from(new Set(raw.defaultChannels.filter((channel): channel is OutboundNotificationChannel => allowedChannels.has(channel as OutboundNotificationChannel))))
-    : defaultSettings.defaultChannels
+  const raw = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Partial<OutboundNotificationSettings> & { defaultChannels?: OutboundNotificationChannel[] }
+    : {}
+  const legacyChannels = Array.isArray(raw.defaultChannels) ? raw.defaultChannels : undefined
+  const inAppValue = raw.inApp && typeof raw.inApp === 'object' ? raw.inApp.enabled : legacyChannels?.includes('站内告警')
 
   return {
-    defaultChannels: defaultChannels.length ? defaultChannels : defaultSettings.defaultChannels,
+    inApp: { enabled: inAppValue ?? defaultSettings.inApp.enabled },
     dingTalk: channelSetting(raw.dingTalk),
     weCom: channelSetting(raw.weCom),
   }
 }
 
+export function outboundWebhookProvider(value: string): OutboundProvider | undefined {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase()
+    if (hostname === 'dingtalk.com' || hostname.endsWith('.dingtalk.com')) return 'dingTalk'
+    if (hostname === 'qyapi.weixin.qq.com') return 'weCom'
+  } catch {
+    return undefined
+  }
+  return undefined
+}
+
+function notificationWebhook(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return ''
+  return text((value as { webhookUrl?: unknown }).webhookUrl)
+}
+
+async function migrateLegacyRuleWebhooks(current: OutboundNotificationSettings) {
+  const [resourceRules, logRules, cgiRules, sslRules] = await Promise.all([
+    prisma.hostResourceMonitorRule.findMany({ select: { notification: true } }),
+    prisma.logMonitorRule.findMany({ select: { notification: true } }),
+    prisma.cgiMonitorRule.findMany({ select: { notification: true } }),
+    prisma.sslCertificateMonitor.findMany({ select: { notification: true } }),
+  ])
+  const candidates: Record<OutboundProvider, Set<string>> = { dingTalk: new Set(), weCom: new Set() }
+  const notifications: unknown[] = [
+    ...resourceRules.map((rule) => rule.notification),
+    ...logRules.map((rule) => rule.notification),
+    ...cgiRules.map((rule) => rule.notification),
+    ...sslRules.map((rule) => rule.notification),
+  ]
+  for (const notification of notifications) {
+    const webhookUrl = notificationWebhook(notification)
+    const provider = outboundWebhookProvider(webhookUrl)
+    if (provider) candidates[provider].add(webhookUrl)
+  }
+
+  const settings: OutboundNotificationSettings = {
+    inApp: { ...current.inApp },
+    dingTalk: { ...current.dingTalk },
+    weCom: { ...current.weCom },
+  }
+  const migrated: string[] = []
+  for (const provider of ['dingTalk', 'weCom'] as const) {
+    const channel = settings[provider]
+    if (!channel.enabled || channel.webhookUrl?.trim() || candidates[provider].size !== 1) continue
+    channel.webhookUrl = Array.from(candidates[provider])[0]
+    migrated.push(provider === 'dingTalk' ? '钉钉' : '企业微信')
+  }
+  if (!migrated.length) return current
+
+  await prisma.appSetting.upsert({
+    where: { key: OUTBOUND_NOTIFICATION_SETTING_KEY },
+    update: { value: settings as unknown as Prisma.InputJsonValue },
+    create: { key: OUTBOUND_NOTIFICATION_SETTING_KEY, value: settings as unknown as Prisma.InputJsonValue },
+  })
+  console.log(`Migrated legacy rule webhook to global settings: ${migrated.join(', ')}`)
+  return settings
+}
+
 export async function getOutboundNotificationSettings() {
   const row = await prisma.appSetting.findUnique({ where: { key: OUTBOUND_NOTIFICATION_SETTING_KEY } })
-  return normalizeOutboundNotificationSettings(row?.value)
+  const settings = normalizeOutboundNotificationSettings(row?.value)
+  const needsMigration = (settings.dingTalk.enabled && !settings.dingTalk.webhookUrl?.trim())
+    || (settings.weCom.enabled && !settings.weCom.webhookUrl?.trim())
+  if (!needsMigration) return settings
+  if (!legacyOutboundMigration) {
+    legacyOutboundMigration = migrateLegacyRuleWebhooks(settings).catch((error) => {
+      console.error('Legacy outbound webhook migration failed:', error)
+      return settings
+    })
+  }
+  return legacyOutboundMigration
 }
 
 export async function saveOutboundNotificationSettings(input: OutboundNotificationSettings) {

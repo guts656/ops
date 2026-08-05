@@ -66,10 +66,6 @@ export interface CreateAlertInput {
   fingerprint?: string
   relatedType?: string
   relatedId?: string
-  outboundNotification?: {
-    channels: Array<'站内告警' | '企业微信' | '钉钉'>
-    webhookUrl?: string
-  }
 }
 
 export interface AlertNoiseReductionResult {
@@ -84,6 +80,7 @@ export interface AlertNoiseReductionResult {
 
 export interface CreateAlertResult {
   alert?: AlertItem
+  notificationResults?: string[]
   noiseReduction: AlertNoiseReductionResult
   skipped?: boolean
   skippedReason?: 'host_maintenance' | 'manual_resolved'

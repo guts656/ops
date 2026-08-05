@@ -1,0 +1,4 @@
+ARG WEB_BASE=ops-platform-web:latest
+FROM ${WEB_BASE}
+
+COPY dist/ /usr/share/nginx/html/

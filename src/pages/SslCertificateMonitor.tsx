@@ -6,7 +6,7 @@ import { getErrorMessage } from '../api/http'
 import { checkSslCertificateMonitor, createSslCertificateMonitor, deleteSslCertificateMonitor, listSslCertificateHistories, listSslCertificateMonitors, updateSslCertificateMonitor } from '../api/sslCertificates'
 import PermissionGate from '../components/auth/PermissionGate'
 import { PERMISSIONS } from '../config/permissions'
-import type { SslCertificateChannel, SslCertificateHistory, SslCertificateMonitor, SslCertificateMonitorInput, SslCertificatePlatformLevel, SslCertificateStatus } from '../types/sslCertificate'
+import type { SslCertificateHistory, SslCertificateMonitor, SslCertificateMonitorInput, SslCertificatePlatformLevel, SslCertificateStatus } from '../types/sslCertificate'
 import { formatShanghaiTime } from '../utils/time'
 
 const statusLabels: Record<SslCertificateStatus, string> = {
@@ -25,15 +25,11 @@ const statusColors: Record<SslCertificateStatus, string> = {
   unknown: 'default',
 }
 
-const sslCertificateChannels: SslCertificateChannel[] = ['站内告警', '企业微信', '钉钉']
-const channelOptions: Array<{ label: SslCertificateChannel; value: SslCertificateChannel }> = sslCertificateChannels.map((value) => ({ label: value, value }))
 const alertLevelOptions: SslCertificatePlatformLevel[] = ['紧急', '严重', '警告', '提示']
 const defaultThresholds = [30, 15, 7]
 const thresholdOptions = [100, 80, 60, 30, 15, 7].map((value) => ({ value, label: `到期前 ${value} 天` }))
 
 type FormValues = Omit<SslCertificateMonitorInput, 'notification'> & {
-  notificationChannels?: SslCertificateChannel[]
-  webhookUrl?: string
   receivers?: string
 }
 
@@ -73,8 +69,6 @@ function toPayload(values: FormValues): SslCertificateMonitorInput {
     checkTime: values.checkTime || '08:30',
     alertLevel: values.alertLevel || '警告',
     notification: {
-      channels: values.notificationChannels?.length ? values.notificationChannels : ['站内告警'],
-      webhookUrl: values.webhookUrl,
       receivers: values.receivers,
     },
   }
@@ -92,11 +86,9 @@ function toFormValues(record?: SslCertificateMonitor): Partial<FormValues> {
       thresholds: record.thresholds,
       checkTime: record.checkTime,
       alertLevel: record.alertLevel,
-      notificationChannels: record.notification.channels,
-      webhookUrl: record.notification.webhookUrl,
       receivers: record.notification.receivers,
     }
-    : { enabled: true, port: 443, thresholds: defaultThresholds, checkTime: '08:30', alertLevel: '警告', notificationChannels: ['站内告警'] }
+    : { enabled: true, port: 443, thresholds: defaultThresholds, checkTime: '08:30', alertLevel: '警告' }
 }
 
 export default function SslCertificateMonitorPage() {
@@ -206,7 +198,6 @@ export default function SslCertificateMonitorPage() {
     { title: '剩余天数', dataIndex: 'remainingDays', width: 110, render: (value) => <RemainingDays value={value} /> },
     { title: '域名匹配', dataIndex: 'domainMatched', width: 110, render: (value, record) => record.status === 'unknown' ? '-' : <Tag color={value ? 'green' : 'red'}>{value ? '匹配' : '不匹配'}</Tag> },
     { title: '阈值', dataIndex: 'thresholds', width: 120, render: (value: number[]) => value.join('/') },
-    { title: '通知渠道', dataIndex: ['notification', 'channels'], width: 180, render: (value: SslCertificateChannel[]) => value?.length ? value.map((channel) => <Tag key={channel}>{channel}</Tag>) : '-' },
     { title: '最近检测', dataIndex: 'lastCheckedAt', width: 170, render: formatTime },
     { title: '下次检测', dataIndex: 'nextCheckAt', width: 170, render: formatTime },
     { title: '错误信息', dataIndex: 'lastError', width: 220, ellipsis: true, render: (value) => value || '-' },
@@ -231,7 +222,7 @@ export default function SslCertificateMonitorPage() {
         <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
           <div>
             <Typography.Title level={3}>SSL 证书监控</Typography.Title>
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>监控域名证书有效期、域名匹配和到期告警；外部通知复用平台全局或规则级 Webhook。</Typography.Paragraph>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>监控域名证书有效期、域名匹配和到期告警。</Typography.Paragraph>
           </div>
           <PermissionGate permission={PERMISSIONS.SSL_CERTIFICATES_MANAGE}>
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>添加域名</Button>
@@ -239,7 +230,7 @@ export default function SslCertificateMonitorPage() {
         </div>
       </Card>
 
-      <Alert type="info" showIcon message="检测说明" description="平台服务端会真实发起 TLS 握手读取证书有效期。命中阈值、证书过期、获取失败或域名不匹配时会进入告警中心；如选择企业微信/钉钉，将按规则 Webhook 或设置页全局 Webhook 外发。" />
+      <Alert type="info" showIcon message="检测说明" description="平台服务端会真实发起 TLS 握手读取证书有效期。命中阈值、证书过期、获取失败或域名不匹配时会进入告警中心，并按设置模块的全局通知配置发送。" />
 
       <Row gutter={[16, 16]}>
         <Col xs={12} lg={6}><Card><Statistic title="监控总数" value={stats.total} prefix={<ApiOutlined />} /></Card></Col>
@@ -271,9 +262,7 @@ export default function SslCertificateMonitorPage() {
             <Col span={12}><Form.Item name="checkTime" label="每日检测时间"><Input placeholder="08:30" /></Form.Item></Col>
             <Col span={12}><Form.Item name="alertLevel" label="告警级别"><Select options={alertLevelOptions.map((value) => ({ label: value, value }))} /></Form.Item></Col>
           </Row>
-          <Form.Item name="notificationChannels" label="通知渠道"><Checkbox.Group options={channelOptions} /></Form.Item>
-          <Form.Item name="webhookUrl" label="规则 Webhook 覆盖"><Input.Password placeholder="可选；留空使用设置页全局 Webhook" /></Form.Item>
-          <Form.Item name="receivers" label="接收人/负责人"><Input placeholder="可选，用于告警 owner 和通知内容" /></Form.Item>
+          <Form.Item name="receivers" label="告警负责人"><Input placeholder="可选，用于告警归属" /></Form.Item>
         </Form>
       </Drawer>
 

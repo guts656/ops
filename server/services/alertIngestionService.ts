@@ -52,6 +52,7 @@ async function resolveMaintenanceHostId(input: CreateAlertInput) {
   if (input.relatedType === 'service_event') return (await prisma.serviceEvent.findUnique({ where: { id: input.relatedId }, select: { hostId: true } }))?.hostId
   if (input.relatedType === 'log_monitor_rule') return (await prisma.logMonitorRule.findUnique({ where: { id: input.relatedId }, select: { hostId: true } }))?.hostId ?? undefined
   if (input.relatedType === 'cgi_monitor_rule') return (await prisma.cgiMonitorRule.findUnique({ where: { id: input.relatedId }, select: { probeHostId: true } }))?.probeHostId ?? undefined
+  if (input.relatedType === 'ipush_monitor_rule') return (await prisma.ipushMonitorRule.findUnique({ where: { id: input.relatedId }, select: { hostId: true } }))?.hostId ?? undefined
   return undefined
 }
 
@@ -76,14 +77,7 @@ async function manuallyResolvedActiveCondition(input: CreateAlertInput, fingerpr
   return cooldownUntil > now ? cooldownUntil : false
 }
 
-async function outboundNotificationForAlert(input: CreateAlertInput) {
-  if (input.outboundNotification) return input.outboundNotification
-  const settings = await getOutboundNotificationSettings()
-  return { channels: settings.defaultChannels }
-}
-
-async function sendGlobalAlertNotification(input: CreateAlertInput, alert: AlertItem) {
-  const ruleNotification = await outboundNotificationForAlert(input)
+async function sendGlobalAlertNotification(alert: AlertItem) {
   const content = [
     `【${alert.level}】${alert.title || alert.service}`,
     alert.content,
@@ -91,7 +85,7 @@ async function sendGlobalAlertNotification(input: CreateAlertInput, alert: Alert
     `服务/对象：${alert.service}`,
     `时间：${alert.time}`,
   ].join('\n')
-  return sendMonitorNotifications({ ruleNotification, content })
+  return sendMonitorNotifications({ content })
 }
 
 export function toAlertItem(alert: any): AlertItem {
@@ -196,17 +190,21 @@ export async function ingestAlert(input: CreateAlertInput): Promise<CreateAlertR
   await markLatestAlert(noiseReduction.fingerprint, alert.id)
   const alertItem = toAlertItem(alert)
   emitAlertEvent(activeDuplicate ? 'alert:updated' : 'alert:new', alertItem)
+  let notificationResults: string[] = []
   if (!alertItem.isSuppressed) {
-    await createNotification({
-      type: 'alert',
-      level: alertItem.level === '紧急' || alertItem.level === '严重' ? 'error' : 'warning',
-      title: `${activeDuplicate ? '持续告警' : '新告警'}：${alertItem.title || alertItem.service}`,
-      content: alertItem.content,
-      entityType: 'alert',
-      entityId: alertItem.id,
-      metadata: { source: alertItem.source, level: alertItem.level, repeated: Boolean(activeDuplicate), occurrenceCount: alertItem.occurrenceCount },
-    })
-    const notificationResults = await sendGlobalAlertNotification(input, alertItem)
+    const settings = await getOutboundNotificationSettings()
+    if (settings.inApp.enabled) {
+      await createNotification({
+        type: 'alert',
+        level: alertItem.level === '紧急' || alertItem.level === '严重' ? 'error' : 'warning',
+        title: `${activeDuplicate ? '持续告警' : '新告警'}：${alertItem.title || alertItem.service}`,
+        content: alertItem.content,
+        entityType: 'alert',
+        entityId: alertItem.id,
+        metadata: { source: alertItem.source, level: alertItem.level, repeated: Boolean(activeDuplicate), occurrenceCount: alertItem.occurrenceCount },
+      })
+    }
+    notificationResults = await sendGlobalAlertNotification(alertItem)
     if (notificationResults.length) {
       await prisma.alert.update({
         where: { id: alertItem.id },
@@ -216,5 +214,5 @@ export async function ingestAlert(input: CreateAlertInput): Promise<CreateAlertR
     }
     if (!activeDuplicate) await handleAlertWithSelfHealing(alertItem)
   }
-  return { alert: alertItem, noiseReduction }
+  return { alert: alertItem, noiseReduction, notificationResults }
 }

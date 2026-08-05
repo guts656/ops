@@ -270,6 +270,7 @@ model LogMonitorAlert {
   windowEnd           DateTime       @map("window_end")
   matchedKeywords     String[]       @default([]) @map("matched_keywords")
   sampleLogIds        String[]       @default([]) @map("sample_log_ids")
+  matchEvidence       Json           @default("[]") @map("match_evidence")
   notificationResults String[]       @default([]) @map("notification_results")
   rule                LogMonitorRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
   createdAt           DateTime       @default(now()) @map("created_at")
@@ -394,6 +395,73 @@ model CgiMonitorAlert {
   @@index([ruleId, createdAt])
   @@index([alertId])
   @@map("cgi_monitor_alerts")
+}
+
+model IpushMonitorRule {
+  id                  String              @id @default(cuid())
+  name                String
+  description         String              @default("")
+  enabled             Boolean             @default(true)
+  hostId              String?             @map("host_id")
+  targetHost          String              @map("target_host")
+  port                Int
+  systemCode          String              @map("system_code")
+  serviceCode         String              @map("service_code")
+  username            String
+  encryptedPassword   String              @map("encrypted_password")
+  passwordIv          String              @map("password_iv")
+  passwordTag         String              @map("password_tag")
+  expectedGreeting    String              @default("xinit") @map("expected_greeting")
+  expectedLoginResult String              @default("xaucode 200_login_ok") @map("expected_login_result")
+  connectTimeoutMs    Int                 @default(5000) @map("connect_timeout_ms")
+  responseTimeoutMs   Int                 @default(5000) @map("response_timeout_ms")
+  intervalSeconds     Int                 @default(60) @map("interval_seconds")
+  failureThreshold    Int                 @default(3) @map("failure_threshold")
+  cooldownMinutes     Int                 @default(30) @map("cooldown_minutes")
+  alertLevel          String              @default("严重") @map("alert_level")
+  daysOfWeek          Int[]               @default([]) @map("days_of_week")
+  timeRanges          Json                @default("[]") @map("time_ranges")
+  holidayMode         String              @default("ignore") @map("holiday_mode")
+  holidays            String[]            @default([])
+  notification        Json                @default("{}")
+  lastCheckedAt       DateTime?           @map("last_checked_at")
+  lastTriggeredAt     DateTime?           @map("last_triggered_at")
+  lastHealthyAt       DateTime?           @map("last_healthy_at")
+  consecutiveFailures Int                 @default(0) @map("consecutive_failures")
+  triggerCount        Int                 @default(0) @map("trigger_count")
+  lastReachable       Boolean?            @map("last_reachable")
+  lastLatencyMs       Int?                @map("last_latency_ms")
+  lastStage           String              @default("未检测") @map("last_stage")
+  lastError           String?             @map("last_error")
+  lastResponseSnippet String               @default("") @map("last_response_snippet")
+  alerts              IpushMonitorAlert[]
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+
+  @@index([enabled])
+  @@index([hostId])
+  @@index([targetHost, port])
+  @@index([lastCheckedAt])
+  @@index([lastTriggeredAt])
+  @@map("ipush_monitor_rules")
+}
+
+model IpushMonitorAlert {
+  id                  String           @id @default(cuid())
+  ruleId              String           @map("rule_id")
+  alertId             String           @map("alert_id")
+  stage               String
+  reachable           Boolean
+  latencyMs           Int?             @map("latency_ms")
+  responseSnippet     String           @default("") @map("response_snippet")
+  errorMessage        String           @default("") @map("error_message")
+  notificationResults String[]         @default([]) @map("notification_results")
+  rule                IpushMonitorRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  createdAt           DateTime         @default(now()) @map("created_at")
+
+  @@index([ruleId, createdAt])
+  @@index([alertId])
+  @@map("ipush_monitor_alerts")
 }
 
 model SslCertificateMonitor {

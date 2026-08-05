@@ -1,6 +1,5 @@
 export type CgiMonitorMatchMode = 'contains' | 'not_contains'
 export type CgiMonitorHolidayMode = 'ignore' | 'include' | 'exclude'
-export type CgiMonitorChannel = '站内告警' | '企业微信' | '钉钉'
 
 export interface CgiMonitorTimeRange {
   start: string
@@ -12,8 +11,6 @@ export type CgiMonitorSelfHealingMode = 'safe' | 'controlled'
 export type CgiMonitorSelfHealingPriority = 'P0' | 'P1' | 'P2' | 'P3'
 
 export interface CgiMonitorNotification {
-  channels: CgiMonitorChannel[]
-  webhookUrl?: string
   receivers?: string
 }
 

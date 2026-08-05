@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Checkbox, Col, Descriptions, Form, Input, Row, Space, Switch, Typography, message } from 'antd'
+import { Alert, Button, Card, Col, Descriptions, Form, Input, Row, Space, Switch, Typography, message } from 'antd'
 import { useEffect, useState } from 'react'
 import { getErrorMessage } from '../api/http'
 import { getOutboundNotificationSettings, saveOutboundNotificationSettings, testOutboundNotification } from '../api/settings'
@@ -8,9 +8,9 @@ import { useAppStore } from '../stores/appStore'
 import { useAuthStore } from '../stores/authStore'
 
 const defaultSettings = {
-  defaultChannels: ['站内告警'],
-  dingTalk: { enabled: false, webhookUrl: '', receivers: '' },
-  weCom: { enabled: false, webhookUrl: '', receivers: '' },
+  inApp: { enabled: true },
+  dingTalk: { enabled: false, webhookUrl: '', receivers: '', keyword: '' },
+  weCom: { enabled: false, webhookUrl: '', receivers: '', keyword: '' },
 }
 
 export default function Settings() {
@@ -63,7 +63,7 @@ export default function Settings() {
     const channelValues = channel === '钉钉' ? values.dingTalk : values.weCom
     setTestingChannel(channel)
     try {
-      const result = await testOutboundNotification({ channel, webhookUrl: channelValues?.webhookUrl })
+      const result = await testOutboundNotification({ channel, webhookUrl: channelValues?.webhookUrl, keyword: channelValues?.keyword })
       setTestResults(result.results)
       const failed = result.results.some((item) => item.includes('发送失败') || item.includes('未配置'))
       if (failed) message.warning(result.results.join('；'))
@@ -88,17 +88,33 @@ export default function Settings() {
           type="info"
           style={{ marginBottom: 16 }}
           message="统一配置钉钉/企业微信机器人"
-          description="监控规则未单独填写 Webhook 时，将使用这里的全局配置。钉钉机器人如开启关键词校验，请确保测试消息或告警标题包含机器人关键词。"
+          description="站内告警、钉钉和企业微信只在这里统一开启或关闭；所有监控规则共用该配置。"
         />
         <Form form={form} layout="vertical" initialValues={defaultSettings} onFinish={saveSettings} disabled={!canManage}>
-          <Form.Item name="defaultChannels" label="默认通知渠道" rules={[{ required: true, message: '请选择默认通知渠道' }]}>
-            <Checkbox.Group options={['站内告警', '企业微信', '钉钉']} />
-          </Form.Item>
+          <Card size="small" title="站内告警" style={{ marginBottom: 16 }}>
+            <Form.Item name={['inApp', 'enabled']} label="启用站内告警" valuePropName="checked" style={{ marginBottom: 0 }}><Switch /></Form.Item>
+          </Card>
           <Row gutter={16}>
             <Col xs={24} lg={12}>
               <Card size="small" title="钉钉机器人">
                 <Form.Item name={['dingTalk', 'enabled']} label="启用钉钉" valuePropName="checked"><Switch /></Form.Item>
-                <Form.Item name={['dingTalk', 'webhookUrl']} label="Webhook URL"><Input.Password placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." visibilityToggle={false} /></Form.Item>
+                <Form.Item
+                  name={['dingTalk', 'webhookUrl']}
+                  label="Webhook URL"
+                  dependencies={[['dingTalk', 'enabled']]}
+                  rules={[({ getFieldValue }) => ({
+                    validator(_, value) {
+                      return getFieldValue(['dingTalk', 'enabled']) && !value?.trim()
+                        ? Promise.reject(new Error('启用钉钉时必须填写 Webhook URL'))
+                        : Promise.resolve()
+                    },
+                  })]}
+                >
+                  <Input.Password placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." visibilityToggle={false} />
+                </Form.Item>
+                <Form.Item name={['dingTalk', 'keyword']} label="安全关键词 / 消息前缀" extra="钉钉机器人启用了自定义关键词时填写；发送时会自动放在消息首行。">
+                  <Input placeholder="例如：dispatcher" />
+                </Form.Item>
                 <Form.Item name={['dingTalk', 'receivers']} label="接收群/备注"><Input placeholder="例如：SRE 值班群" /></Form.Item>
                 <PermissionGate permission={PERMISSIONS.SETTINGS_MANAGE}>
                   <Button onClick={() => runTest('钉钉')} loading={testingChannel === '钉钉'}>发送测试</Button>
@@ -108,7 +124,20 @@ export default function Settings() {
             <Col xs={24} lg={12}>
               <Card size="small" title="企业微信机器人">
                 <Form.Item name={['weCom', 'enabled']} label="启用企业微信" valuePropName="checked"><Switch /></Form.Item>
-                <Form.Item name={['weCom', 'webhookUrl']} label="Webhook URL"><Input.Password placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." visibilityToggle={false} /></Form.Item>
+                <Form.Item
+                  name={['weCom', 'webhookUrl']}
+                  label="Webhook URL"
+                  dependencies={[['weCom', 'enabled']]}
+                  rules={[({ getFieldValue }) => ({
+                    validator(_, value) {
+                      return getFieldValue(['weCom', 'enabled']) && !value?.trim()
+                        ? Promise.reject(new Error('启用企业微信时必须填写 Webhook URL'))
+                        : Promise.resolve()
+                    },
+                  })]}
+                >
+                  <Input.Password placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." visibilityToggle={false} />
+                </Form.Item>
                 <Form.Item name={['weCom', 'receivers']} label="接收群/备注"><Input placeholder="例如：运维值班群" /></Form.Item>
                 <PermissionGate permission={PERMISSIONS.SETTINGS_MANAGE}>
                   <Button onClick={() => runTest('企业微信')} loading={testingChannel === '企业微信'}>发送测试</Button>

@@ -1,7 +1,6 @@
 import type { Prisma } from '../../src/generated/prisma/client'
 import { prisma } from '../db/prisma'
 import { ingestAlert } from '../services/alertIngestionService'
-import { sendMonitorNotifications } from '../services/outboundNotificationService'
 import { shanghaiTime } from '../utils/time'
 import type { HostResourceMetric, HostResourceMonitorAlertRecord, HostResourceMonitorNotification, HostResourceMonitorRule, HostResourceMonitorRuleInput, LogMonitorTimeRange } from '../../src/types/hostResourceMonitor'
 
@@ -43,10 +42,7 @@ function normalizeHolidays(values: string[] | undefined) {
 
 function notificationValue(value: unknown): HostResourceMonitorNotification {
   const notification = value as Partial<HostResourceMonitorNotification> | undefined
-  const channels = Array.isArray(notification?.channels) ? notification.channels.filter((channel) => ['站内告警', '企业微信', '钉钉'].includes(channel)) : ['站内告警']
   return {
-    channels: channels.length ? channels as HostResourceMonitorNotification['channels'] : ['站内告警'],
-    webhookUrl: notification?.webhookUrl || undefined,
     receivers: notification?.receivers || undefined,
   }
 }
@@ -245,7 +241,6 @@ async function triggerMetricAlert(rule: HostResourceMonitorRule, host: HostTarge
   const content = durationMinutes > 1
     ? `${hostInfo}；${label} 使用率已持续 ${durationMinutes} 分钟不低于 ${rule.threshold}%，最新值 ${value}%。窗口：${nowText(state?.windowStart ?? new Date(sampledAt.getTime() - durationMinutes * 60_000))} ~ ${nowText(sampledAt)}。`
     : `${hostInfo}；${label} 使用率 ${value}%，达到阈值 ${rule.threshold}%。`
-  const notificationResults = await sendMonitorNotifications({ ruleNotification: rule.notification, content: `【${rule.alertLevel}】${rule.name}\n${content}\n时间：${nowText(sampledAt)}` })
   const result = await ingestAlert({
     level: rule.alertLevel,
     time: nowText(sampledAt),
@@ -257,9 +252,9 @@ async function triggerMetricAlert(rule: HostResourceMonitorRule, host: HostTarge
     relatedType: 'host_resource_monitor_rule',
     relatedId: rule.id,
     fingerprint: `host-resource:${rule.id}:${host.id}:${metric}`,
-    outboundNotification: { channels: ['站内告警'] },
     metadata: { ruleId: rule.id, ruleName: rule.name, hostId: host.id, sourceHostId: host.id, hostname: host.hostname, ip: host.ip, hostIp: host.ip, group: host.group, tags: host.tags || [], metric, actualValue: value, threshold: rule.threshold, durationMinutes, windowStart: state?.windowStart?.toISOString(), sampleCount: state?.sampleCount, sampledAt: sampledAt.toISOString() },
   })
+  const notificationResults = result.notificationResults ?? []
   await prisma.$transaction([
     ...(result.alert ? [prisma.hostResourceMonitorAlert.create({ data: { ruleId: rule.id, alertId: result.alert.id, hostId: host.id, metric, value, threshold: rule.threshold, sampledAt, notificationResults } })] : []),
     prisma.hostResourceMonitorRule.update({ where: { id: rule.id }, data: { lastTriggeredAt: sampledAt, lastEvaluatedAt: sampledAt, triggerCount: { increment: 1 } } }),

@@ -1,4 +1,4 @@
-import type { LogMonitorChannel, LogMonitorHostScope, LogMonitorTimeRange } from './log'
+import type { LogMonitorHostScope, LogMonitorTimeRange } from './log'
 
 export type { LogMonitorTimeRange }
 export type HostResourceMetric = 'cpu' | 'memory' | 'disk'
@@ -6,8 +6,6 @@ export type HostResourceAlertLevel = '紧急' | '严重' | '警告' | '提示'
 export type HostResourceHolidayMode = 'ignore' | 'include' | 'exclude'
 
 export interface HostResourceMonitorNotification {
-  channels: LogMonitorChannel[]
-  webhookUrl?: string
   receivers?: string
 }
 

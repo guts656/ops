@@ -534,7 +534,6 @@ export async function runDueWeeklyHealthReport(now = new Date()) {
     metadata: { type: report.type, periodStart: report.periodStart, periodEnd: report.periodEnd, healthScore: report.healthScore, healthLevel: report.healthLevel },
   })
   await sendMonitorNotifications({
-    ruleNotification: { channels: ['企业微信', '钉钉'] },
     content: `【每周系统健康报告】${report.title}\n健康度：${report.healthScore} 分（${levelLabel(report.healthLevel)}）\n摘要：${report.summary}\n优化建议：${report.suggestions.slice(0, 3).map((item) => item.title).join('；') || '暂无'}`,
   })
   return report

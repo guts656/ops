@@ -1,11 +1,8 @@
 export type SslCertificateStatus = 'normal' | 'expiring' | 'expired' | 'failed' | 'unknown'
 export type SslCertificateAlertLevel = 'none' | 'warning30' | 'warning15' | 'warning7' | 'critical'
-export type SslCertificateChannel = '站内告警' | '企业微信' | '钉钉'
 export type SslCertificatePlatformLevel = '紧急' | '严重' | '警告' | '提示'
 
 export interface SslCertificateNotification {
-  channels: SslCertificateChannel[]
-  webhookUrl?: string
   receivers?: string
 }
 

@@ -17,6 +17,7 @@ import { shanghaiTime } from '../utils/time.ts'
 const router = Router()
 const AGENT_UPDATE_RUNNING_TIMEOUT_MS = Math.max(10 * 60 * 1000, Number(process.env.OPS_AGENT_UPDATE_RUNNING_TIMEOUT_MS || 10 * 60 * 1000))
 const WINDOWS_SELF_UPDATE_MIN_AGENT_VERSION = 'v2.10.11'
+const WINDOWS_NATIVE_SELF_UPDATE_MIN_AGENT_VERSION = 'v2.10.20'
 
 const metricsSchema = z.object({
   cpu: z.coerce.number().min(0).max(100),
@@ -64,12 +65,19 @@ const logCollectionStatusSchema = z.object({
   paths: z.array(logCollectionPathStatusSchema).max(50).optional(),
   rawPayload: z.unknown().optional(),
 })
+const localLogMonitorMatchSchema = z.object({
+  file: z.coerce.string().min(1).max(1024),
+  lineNumber: z.coerce.number().int().min(1),
+  line: z.coerce.string().max(2048),
+  matchedKeywords: z.array(z.coerce.string().max(200)).max(20).optional(),
+})
 const localLogMonitorResultSchema = z.object({
   ruleId: z.coerce.string().min(1),
   matchedCount: z.coerce.number().int().min(0),
   matchedKeywords: z.array(z.coerce.string()).max(20).optional(),
   matchedSources: z.array(z.coerce.string()).max(20).optional(),
   matchedFiles: z.array(z.coerce.string()).max(20).optional(),
+  matches: z.array(localLogMonitorMatchSchema).max(20).optional(),
   readLines: z.coerce.number().int().min(0).optional(),
   windowStart: z.string().datetime().optional(),
   windowEnd: z.string().datetime().optional(),
@@ -80,6 +88,12 @@ const localLogMonitorResultsSchema = z.object({
   mode: z.literal('local_monitor').optional(),
   rawLogUpload: z.literal(false).optional(),
   results: z.array(localLogMonitorResultSchema).max(200),
+}).superRefine((value, context) => {
+  const matches = value.results.flatMap((result) => result.matches ?? [])
+  const evidenceCharacters = matches.reduce((total, match) => total + match.file.length + match.line.length + (match.matchedKeywords ?? []).join('').length, 0)
+  if (matches.length > 200 || evidenceCharacters > 256 * 1024) {
+    context.addIssue({ code: 'custom', message: '日志命中证据超过单次上报限制', path: ['results'] })
+  }
 })
 const servicesSchema = z.object({
   services: z.array(z.object({
@@ -314,7 +328,21 @@ try {
   [System.IO.File]::WriteAllText($configPath, $configRaw, [Text.Encoding]::UTF8)
   $info = '{"version":"' + $escapedVersion + '","hostId":"' + (Escape-JsonString $hostId) + '","installedBy":"ops-platform-legacy-self-update"}'
   [System.IO.File]::WriteAllText((Join-Path $base 'agent-info.json'), $info, [Text.Encoding]::UTF8)
-  try { schtasks /Run /TN OpsPlatformAgent | Out-Null } catch {}
+  $intervalMinutes = 1
+  try {
+    $match = [regex]::Match($configRaw, '"intervalSeconds"\\s*:\\s*([0-9]+)')
+    if ($match.Success) { $intervalMinutes = [Math]::Max(1, [Math]::Ceiling([double]$match.Groups[1].Value / 60)) }
+  } catch {}
+  $taskAction = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '" once'
+  $created = $false
+  for ($attempt = 1; $attempt -le 30; $attempt += 1) {
+    & schtasks.exe /Create /TN OpsPlatformAgent /SC MINUTE /MO $intervalMinutes /RU SYSTEM /RL HIGHEST /TR $taskAction /F | Out-Null
+    if ($LASTEXITCODE -eq 0) { $created = $true; break }
+    Start-Sleep -Seconds 2
+  }
+  if (-not $created) { throw 'scheduled task create failed after retries' }
+  $arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '" once'
+  Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden
 } finally {
   Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
@@ -392,6 +420,21 @@ router.get('/hosts/:id/jobs/next', async (req, res, next) => {
           },
         })
         return res.json({ job: null })
+      }
+      if (auth.host.os === 'Windows' && !isAgentVersionAtLeast(auth.host.agentVersion, WINDOWS_NATIVE_SELF_UPDATE_MIN_AGENT_VERSION)) {
+        await prisma.hostAgentJob.update({
+          where: { id: job.id },
+          data: { summary: `旧版 Windows Agent 正在通过兼容脚本更新到 ${AGENT_VERSION}` },
+        })
+        return res.json({
+          job: {
+            id: job.id,
+            type: 'batch_run_script',
+            action: 'run_script',
+            scriptBase64: Buffer.from(buildLegacyWindowsSelfUpdateScript(), 'utf8').toString('base64'),
+            timeoutSeconds: 180,
+          },
+        })
       }
       return res.json({ job: { id: job.id, type: job.type, targetVersion: AGENT_VERSION } })
     }

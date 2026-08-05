@@ -85,7 +85,7 @@ function writeRemoteFile(sftp: SFTPWrapper, remotePath: string, content: Buffer)
   return new Promise<void>((resolve, reject) => {
     const stream = sftp.createWriteStream(remotePath, { mode: 0o600 })
     stream.on('error', reject)
-    stream.on('finish', () => resolve())
+    stream.on('close', () => resolve())
     stream.end(content)
   })
 }

@@ -31,6 +31,8 @@ const collectionRuleSchema = z.object({
 const timeRangeSchema = z.object({
   start: z.string().regex(/^\d{2}:\d{2}$/),
   end: z.string().regex(/^\d{2}:\d{2}$/),
+  daysOfWeek: z.array(z.coerce.number().int().min(1).max(7)).max(7).optional(),
+  dayOffset: z.union([z.literal(0), z.literal(1)]).optional(),
 })
 
 const hostScopeSchema = z.enum(['all', 'single', 'multiple', 'group'])
@@ -72,8 +74,6 @@ const monitorRuleSchema = z.object({
   holidayMode: z.enum(['ignore', 'include', 'exclude']).optional(),
   holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(80).optional(),
   notification: z.object({
-    channels: z.array(z.enum(['站内告警', '企业微信', '钉钉'])).min(1).max(3),
-    webhookUrl: z.string().url().optional().or(z.literal('')),
     receivers: z.string().max(200).optional(),
   }).optional(),
   selfHealingBinding: selfHealingBindingSchema.optional(),

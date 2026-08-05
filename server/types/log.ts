@@ -47,7 +47,6 @@ export interface LogQueryResult {
 
 export type LogMonitorHolidayMode = 'ignore' | 'include' | 'exclude'
 export type LogMonitorHostScope = 'all' | 'single' | 'multiple' | 'group'
-export type LogMonitorChannel = '站内告警' | '企业微信' | '钉钉'
 export type LogMonitorSelfHealingAction = '启动服务' | '重启服务'
 export type LogMonitorSelfHealingMode = 'safe' | 'controlled'
 export type LogMonitorSelfHealingPriority = 'P0' | 'P1' | 'P2' | 'P3'
@@ -69,11 +68,11 @@ export interface LogMonitorSelfHealingBinding {
 export interface LogMonitorTimeRange {
   start: string
   end: string
+  daysOfWeek?: number[]
+  dayOffset?: 0 | 1
 }
 
 export interface LogMonitorNotification {
-  channels: LogMonitorChannel[]
-  webhookUrl?: string
   receivers?: string
 }
 
@@ -142,6 +141,16 @@ export interface LogMonitorAlertRecord {
   windowEnd: string
   matchedKeywords: string[]
   sampleLogIds: string[]
+  matchEvidence: LogMonitorMatchEvidence[]
   notificationResults: string[]
   createdAt: string
+}
+
+export interface LogMonitorMatchEvidence {
+  hostId?: string
+  file: string
+  lineNumber: number
+  line: string
+  matchedKeywords: string[]
+  sampledAt: string
 }

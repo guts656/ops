@@ -6,7 +6,7 @@ import { createCgiMonitorRule, deleteCgiMonitorRule, evaluateCgiMonitorRule, lis
 import { getErrorMessage } from '../../api/http'
 import PermissionGate from '../auth/PermissionGate'
 import { PERMISSIONS } from '../../config/permissions'
-import type { CgiMonitorAlertRecord, CgiMonitorChannel, CgiMonitorRule, CgiMonitorRuleInput, CgiMonitorTimeRange } from '../../types/cgiMonitor'
+import type { CgiMonitorAlertRecord, CgiMonitorRule, CgiMonitorRuleInput, CgiMonitorTimeRange } from '../../types/cgiMonitor'
 import type { Host } from '../../types/host'
 import { formatShanghaiTime } from '../../utils/time'
 import SelfHealingBindingCard from './SelfHealingBindingCard'
@@ -26,8 +26,6 @@ const dayOptions = [
 interface RuleFormValues extends Omit<CgiMonitorRuleInput, 'holidays' | 'notification'> {
   holidaysText?: string
   notification?: {
-    channels?: CgiMonitorChannel[]
-    webhookUrl?: string
     receivers?: string
   }
 }
@@ -41,9 +39,7 @@ function normalizeTimeRanges(values?: CgiMonitorTimeRange[]) {
 }
 
 function toPayload(values: RuleFormValues): CgiMonitorRuleInput {
-  const notification = values.notification?.channels?.length
-    ? { channels: values.notification.channels, webhookUrl: values.notification.webhookUrl, receivers: values.notification.receivers }
-    : undefined
+  const notification = { receivers: values.notification?.receivers }
   const binding = values.selfHealingBinding
   return {
     name: values.name,
@@ -88,7 +84,7 @@ function toFormValues(rule?: CgiMonitorRule): Partial<RuleFormValues> {
       daysOfWeek: [1, 2, 3, 4, 5, 6, 7],
       timeRanges: [{ start: '00:00', end: '23:59' }],
       holidayMode: 'ignore',
-      notification: { channels: ['站内告警'] },
+      notification: { receivers: '' },
       selfHealingBinding: defaultSelfHealingBinding(),
     }
   }
@@ -279,7 +275,7 @@ export default function CgiMonitorPanel({ hosts }: { hosts: Host[] }) {
             { title: '规则', dataIndex: 'ruleId', render: (ruleId) => rules.find((rule) => rule.id === ruleId)?.name || ruleId },
             { title: '状态/耗时', width: 120, render: (_, record) => `${record.statusCode || '-'} / ${record.latencyMs ?? '-'}ms` },
             { title: '错误', dataIndex: 'errorMessage', render: (value) => value || '-' },
-            { title: '通知结果', dataIndex: 'notificationResults', render: (values: string[]) => values?.length ? values.join('；') : '站内告警' },
+            { title: '通知结果', dataIndex: 'notificationResults', render: (values: string[]) => values?.length ? values.join('；') : '无外部通知' },
             { title: '响应片段', dataIndex: 'responseSnippet', render: (value) => <Typography.Text ellipsis style={{ maxWidth: 360 }}>{value || '-'}</Typography.Text> },
           ]}
         />
@@ -342,11 +338,7 @@ export default function CgiMonitorPanel({ hosts }: { hosts: Host[] }) {
             safeDescription="URL 异常后会自动写入自愈执行历史和计划动作，不会执行远程命令。"
           />
 
-          <Card size="small" title="通知配置">
-            <Form.Item name={['notification', 'channels']} label="通知渠道" rules={[{ required: true, message: '请选择通知渠道' }]}><Checkbox.Group options={['站内告警', '企业微信', '钉钉']} /></Form.Item>
-            <Form.Item name={['notification', 'webhookUrl']} label="企业微信/钉钉 Webhook" extra="可选覆盖；不填则使用设置页里的全局告警通知配置。"><Input placeholder="可选：填写后优先使用该规则自己的机器人 Webhook" /></Form.Item>
-            <Form.Item name={['notification', 'receivers']} label="负责人/接收人"><Input placeholder="例如：SRE 值班群、张三" /></Form.Item>
-          </Card>
+          <Form.Item name={['notification', 'receivers']} label="告警负责人"><Input placeholder="例如：SRE 值班组、张三" /></Form.Item>
         </Form>
       </Drawer>
 

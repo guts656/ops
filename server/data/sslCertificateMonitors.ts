@@ -1,16 +1,12 @@
 import type { Prisma } from '../../src/generated/prisma/client'
 import { prisma } from '../db/prisma'
 import { ingestAlert } from '../services/alertIngestionService'
-import { sendMonitorNotifications } from '../services/outboundNotificationService'
 import { checkSslCertificate, isValidSslDomain, type SslAlertLevel, type SslCertificateStatus } from '../services/sslCertificateChecker'
 import { shanghaiTime } from '../utils/time'
 
-export type SslCertificateChannel = '站内告警' | '企业微信' | '钉钉'
 export type SslCertificatePlatformLevel = '紧急' | '严重' | '警告' | '提示'
 
 export interface SslCertificateNotification {
-  channels: SslCertificateChannel[]
-  webhookUrl?: string
   receivers?: string
 }
 
@@ -106,10 +102,7 @@ function normalizeCheckTime(value?: string) {
 
 function notificationValue(value: unknown): SslCertificateNotification {
   const notification = value as Partial<SslCertificateNotification> | undefined
-  const channels = Array.isArray(notification?.channels) ? notification.channels.filter((channel) => ['站内告警', '企业微信', '钉钉'].includes(channel)) : ['站内告警']
   return {
-    channels: channels.length ? channels as SslCertificateChannel[] : ['站内告警'],
-    webhookUrl: notification?.webhookUrl || undefined,
     receivers: notification?.receivers || undefined,
   }
 }
@@ -219,7 +212,7 @@ async function pruneHistories(monitorId: string) {
   if (old.length) await prisma.sslCertificateHistory.deleteMany({ where: { id: { in: old.map((item) => item.id) } } })
 }
 
-async function createAlertForMonitor(monitor: MonitorRow, status: SslCertificateStatus, matched: number | undefined, notificationResults: string[], checkedAt: Date) {
+async function createAlertForMonitor(monitor: MonitorRow, status: SslCertificateStatus, matched: number | undefined, checkedAt: Date) {
   const level = platformAlertLevel(monitor.alertLevel as SslCertificatePlatformLevel, status)
   const content = [
     `SSL 证书监控「${monitor.name}」检测异常。`,
@@ -244,7 +237,6 @@ async function createAlertForMonitor(monitor: MonitorRow, status: SslCertificate
     relatedType: 'ssl_certificate_monitor',
     relatedId: monitor.id,
     fingerprint: `ssl-certificate:${monitor.id}:${status}:${matched ?? 'critical'}`,
-    outboundNotification: { channels: ['站内告警'] },
     metadata: {
       monitorId: monitor.id,
       monitorName: monitor.name,
@@ -256,13 +248,12 @@ async function createAlertForMonitor(monitor: MonitorRow, status: SslCertificate
       domainMatched: monitor.domainMatched,
       matchedThreshold: matched,
       status,
-      notificationResults,
     },
   })
   if (result.alert) {
     await prisma.sslCertificateMonitor.update({ where: { id: monitor.id }, data: { lastTriggeredAt: checkedAt, triggerCount: { increment: 1 } } })
   }
-  return result.alert?.id
+  return { alertId: result.alert?.id, notificationResults: result.notificationResults ?? [] }
 }
 
 export async function listSslCertificateMonitors() {
@@ -310,19 +301,6 @@ export async function checkSslCertificateMonitorNow(id: string, options: { manua
   const result = await checkSslCertificate(monitor.domain, monitor.port, thresholds)
   const matched = matchedThreshold(result.remainingDays, thresholds)
   const trigger = shouldTrigger(result.status, result.remainingDays, thresholds)
-  const notification = notificationValue(monitor.notification)
-  const notificationContent = [
-    `【${platformAlertLevel(monitor.alertLevel as SslCertificatePlatformLevel, result.status)}】SSL证书监控：${monitor.name}`,
-    `域名：${monitor.domain}:${monitor.port}`,
-    monitor.serverIp ? `服务器 IP：${monitor.serverIp}` : undefined,
-    result.validTo ? `到期时间：${shanghaiTime(result.validTo)}` : undefined,
-    typeof result.remainingDays === 'number' ? `剩余天数：${result.remainingDays} 天` : undefined,
-    matched ? `命中阈值：${matched} 天` : undefined,
-    result.errorMessage ? `异常原因：${result.errorMessage}` : undefined,
-    `时间：${shanghaiTime(checkedAt)}`,
-  ].filter(Boolean).join('\n')
-  const notificationResults = trigger ? await sendMonitorNotifications({ ruleNotification: notification, content: notificationContent }) : []
-
   const updated = await prisma.sslCertificateMonitor.update({
     where: { id },
     data: {
@@ -338,7 +316,9 @@ export async function checkSslCertificateMonitorNow(id: string, options: { manua
     },
   })
 
-  const alertId = trigger ? await createAlertForMonitor(updated, result.status, matched, notificationResults, checkedAt) : undefined
+  const alertResult = trigger ? await createAlertForMonitor(updated, result.status, matched, checkedAt) : undefined
+  const alertId = alertResult?.alertId
+  const notificationResults = alertResult?.notificationResults ?? []
   const history = await prisma.sslCertificateHistory.create({
     data: {
       monitorId: monitor.id,

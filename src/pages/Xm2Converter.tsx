@@ -1,4 +1,4 @@
-import { CheckCircleOutlined, FileSearchOutlined, ImportOutlined, UploadOutlined } from '@ant-design/icons'
+import { CalendarOutlined, CheckCircleOutlined, FileSearchOutlined, ImportOutlined, UploadOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Checkbox, Col, Form, Input, Modal, Radio, Row, Select, Space, Statistic, Table, Tag, Typography, Upload, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { UploadFile } from 'antd/es/upload/interface'
@@ -9,6 +9,7 @@ import { queryHosts } from '../api/hosts'
 import { importXm2MonitorRules, previewXm2MonitorJson } from '../api/logs'
 import type { Xm2ConvertedRulePreview, Xm2ConvertPreviewResult, Xm2SkippedItem } from '../types/log'
 import type { Host } from '../types/host'
+import { CHINA_HOLIDAYS_2026, CHINA_HOLIDAYS_2026_SOURCE } from '../constants/chinaHolidays'
 
 const MAX_UPLOAD_SIZE = 5 * 1024 * 1024
 const weekdayOptions = [
@@ -46,7 +47,7 @@ async function readText(file: File) {
 
 function timeText(rule: Xm2ConvertedRulePreview['rule']) {
   if (!rule.timeRanges?.length) return '全天'
-  return rule.timeRanges.map((range) => `${range.start}-${range.end}`).join('；')
+  return rule.timeRanges.map((range) => `${range.dayOffset === 1 ? '次日 ' : ''}${range.start}-${range.end}`).join('；')
 }
 
 function splitLines(value?: string) {
@@ -93,8 +94,8 @@ export default function Xm2Converter() {
     }
   }
 
-  const validateHostScope = async () => {
-    const values = await form.validateFields(['hostScope', 'hostId', 'hostIds', 'hostGroup', 'importEnabled'])
+  const validateImportSettings = async () => {
+    const values = await form.validateFields(['hostScope', 'hostId', 'hostIds', 'hostGroup', 'daysOfWeek', 'holidayMode', 'holidaysText', 'importEnabled'])
     if (values.hostScope === 'single' && !values.hostId) throw new Error('请选择主机')
     if (values.hostScope === 'multiple' && !values.hostIds?.length) throw new Error('请选择至少一台主机')
     if (values.hostScope === 'group' && !values.hostGroup) throw new Error('请选择主机组')
@@ -108,7 +109,7 @@ export default function Xm2Converter() {
     }
     let values: ImportFormValues
     try {
-      values = await validateHostScope()
+      values = await validateImportSettings()
     } catch (error) {
       message.error(error instanceof Error ? error.message : '请完善主机范围')
       return
@@ -116,7 +117,7 @@ export default function Xm2Converter() {
 
     Modal.confirm({
       title: '确认导入 xm2 日志监控规则？',
-      content: `将导入 ${selectedCandidates.length} 条规则，导入后${values.importEnabled ? '立即启用' : '保持停用'}，统一应用当前主机范围。`,
+      content: `将导入 ${selectedCandidates.length} 条规则，导入后${values.importEnabled ? '立即启用' : '保持停用'}。生效星期：${values.daysOfWeek?.length ? weekdayOptions.filter((item) => values.daysOfWeek?.includes(item.value)).map((item) => item.label).join('、') : '每天'}。`,
       okText: '确认导入',
       cancelText: '取消',
       onOk: async () => {
@@ -222,7 +223,7 @@ export default function Xm2Converter() {
               <Form.Item name="holidayMode" label="假日策略">
                 <Select options={[{ label: '忽略假日设置', value: 'ignore' }, { label: '仅指定假日生效', value: 'include' }, { label: '指定假日不生效', value: 'exclude' }]} />
               </Form.Item>
-              <Form.Item name="holidaysText" label="指定假日">
+              <Form.Item name="holidaysText" label="指定假日" extra={<Space size="small"><Button type="link" size="small" icon={<CalendarOutlined />} onClick={() => { form.setFieldValue('holidaysText', CHINA_HOLIDAYS_2026.join('\n')); message.success('已填充 2026 年官方放假日期') }}>填充 2026 放假日期</Button><Typography.Link href={CHINA_HOLIDAYS_2026_SOURCE} target="_blank">官方来源</Typography.Link></Space>}>
                 <Input.TextArea rows={3} placeholder="每行一个日期，例如 2026-05-01" />
               </Form.Item>
               <Form.Item name="importEnabled" label="导入后状态" tooltip="选择启用会让导入的监控规则立即参与评估和告警；不确定时建议选择停用。">

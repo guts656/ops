@@ -6,6 +6,7 @@ import authRouter from './routes/auth.ts'
 import accountsRouter from './routes/accounts.ts'
 import alertsRouter from './routes/alerts.ts'
 import cgiMonitorsRouter from './routes/cgiMonitors.ts'
+import ipushMonitorsRouter from './routes/ipushMonitors.ts'
 import sslCertificatesRouter from './routes/sslCertificates.ts'
 import hostResourceMonitorsRouter from './routes/hostResourceMonitors.ts'
 import healthReportsRouter from './routes/healthReports.ts'
@@ -26,6 +27,7 @@ import { errorHandler } from './middleware/errorHandler.ts'
 import { traceMiddleware } from './middleware/trace.ts'
 import { startHostPullScheduler } from './services/hostPullScheduler.ts'
 import { startCgiMonitorEvaluator } from './services/cgiMonitorEvaluator.ts'
+import { startIpushMonitorEvaluator } from './services/ipushMonitorEvaluator.ts'
 import { startSslCertificateScheduler } from './services/sslCertificateScheduler.ts'
 import { startLogMonitorEvaluator } from './services/logMonitorEvaluator.ts'
 import { startLogRetentionScheduler } from './services/logRetentionScheduler.ts'
@@ -33,8 +35,9 @@ import { startHealthReportScheduler } from './services/healthReportScheduler.ts'
 import { startSelfHealingEvaluator } from './services/selfHealingEvaluator.ts'
 import { startHostOfflineWatchdog } from './services/hostOfflineWatchdog.ts'
 import { startAgentLogUploadWatchdog } from './services/agentLogUploadWatchdog.ts'
+import { startWindowsWeeklyMaintenanceScheduler } from './services/windowsWeeklyMaintenanceScheduler.ts'
 import { setupRealtime } from './services/realtime.ts'
-import { cleanupLinuxServiceMonitoring } from './data/hostServices.ts'
+import { cleanupIgnoredWindowsServiceMonitoring, cleanupLinuxServiceMonitoring } from './data/hostServices.ts'
 
 dotenv.config()
 validateSecurityEnv()
@@ -77,6 +80,7 @@ app.use('/api/auth', authRouter)
 app.use('/api/accounts', accountsRouter)
 app.use('/api/alerts', alertsRouter)
 app.use('/api/cgi-monitors', cgiMonitorsRouter)
+app.use('/api/ipush-monitors', ipushMonitorsRouter)
 app.use('/api/ssl-certificates', sslCertificatesRouter)
 app.use('/api/host-resource-monitors', hostResourceMonitorsRouter)
 app.use('/api/health-reports', healthReportsRouter)
@@ -101,13 +105,20 @@ server.listen(port, () => {
   startLogRetentionScheduler()
   startHealthReportScheduler()
   startCgiMonitorEvaluator()
+  startIpushMonitorEvaluator()
   startSslCertificateScheduler()
   startHostOfflineWatchdog()
   startAgentLogUploadWatchdog()
+  startWindowsWeeklyMaintenanceScheduler()
   cleanupLinuxServiceMonitoring()
     .then((result) => {
       if (result.services || result.events || result.alertsResolved) console.log('Linux service monitoring cleanup:', result)
     })
     .catch((error) => console.error('Linux service monitoring cleanup failed:', error))
+  cleanupIgnoredWindowsServiceMonitoring()
+    .then((result) => {
+      if (result.services || result.alertsResolved) console.log('Ignored Windows service monitoring cleanup:', result)
+    })
+    .catch((error) => console.error('Ignored Windows service monitoring cleanup failed:', error))
   console.log(`API server listening on http://localhost:${port}`)
 })

@@ -1,12 +1,6 @@
-import { getGlobalWebhookForChannel, type OutboundNotificationChannel } from '../data/settings'
-
-export interface RuleNotificationConfig {
-  channels: OutboundNotificationChannel[]
-  webhookUrl?: string
-}
+import { getOutboundNotificationSettings, type OutboundNotificationChannel } from '../data/settings'
 
 export interface SendMonitorNotificationsInput {
-  ruleNotification: RuleNotificationConfig
   content: string
   timeoutMs?: number
 }
@@ -15,12 +9,11 @@ export interface SendNotificationTestInput {
   channel: Exclude<OutboundNotificationChannel, '站内告警'>
   webhookUrl: string
   content: string
+  keyword?: string
   timeoutMs?: number
 }
 
-type WebhookDestination = 'rule' | 'global' | 'test'
-
-const outboundChannels = new Set<OutboundNotificationChannel>(['企业微信', '钉钉'])
+type WebhookDestination = 'global' | 'test'
 
 function compact(value: string, maxLength = 500) {
   return value.replace(/\s+/g, ' ').trim().slice(0, maxLength)
@@ -77,31 +70,29 @@ async function postWebhook(channel: OutboundNotificationChannel, webhookUrl: str
   }
 }
 
-async function resolveWebhook(channel: OutboundNotificationChannel, ruleWebhookUrl?: string) {
-  const overrideUrl = ruleWebhookUrl?.trim()
-  if (overrideUrl) return { url: overrideUrl, destination: 'rule' as const }
-  const globalUrl = await getGlobalWebhookForChannel(channel)
-  if (globalUrl) return { url: globalUrl, destination: 'global' as const }
-  return undefined
-}
-
 export async function sendMonitorNotifications(input: SendMonitorNotificationsInput) {
-  const channels = input.ruleNotification.channels.filter((channel) => outboundChannels.has(channel))
-  if (!channels.length) return []
+  const settings = await getOutboundNotificationSettings()
+  const channels: Array<{ channel: Exclude<OutboundNotificationChannel, '站内告警'>; enabled: boolean; webhookUrl?: string; keyword?: string }> = [
+    { channel: '企业微信', ...settings.weCom },
+    { channel: '钉钉', ...settings.dingTalk },
+  ]
 
   const results: string[] = []
-  for (const channel of channels) {
-    const resolved = await resolveWebhook(channel, input.ruleNotification.webhookUrl)
-    if (!resolved) {
-      results.push(`${channel} 未配置 Webhook`)
+  for (const item of channels) {
+    if (!item.enabled) continue
+    const webhookUrl = item.webhookUrl?.trim()
+    if (!webhookUrl) {
+      results.push(`${item.channel} 未配置 Webhook`)
       continue
     }
-    results.push(await postWebhook(channel, resolved.url, input.content, resolved.destination, input.timeoutMs ?? 10000))
+    const content = item.keyword?.trim() ? `${item.keyword.trim()}\n${input.content}` : input.content
+    results.push(await postWebhook(item.channel, webhookUrl, content, 'global', input.timeoutMs ?? 10000))
   }
   return results
 }
 
 export async function sendNotificationTest(input: SendNotificationTestInput) {
   if (!input.webhookUrl.trim()) return [`${input.channel} 未配置 Webhook`]
-  return [await postWebhook(input.channel, input.webhookUrl.trim(), input.content, 'test', input.timeoutMs ?? 10000)]
+  const content = input.keyword?.trim() ? `${input.keyword.trim()}\n${input.content}` : input.content
+  return [await postWebhook(input.channel, input.webhookUrl.trim(), content, 'test', input.timeoutMs ?? 10000)]
 }

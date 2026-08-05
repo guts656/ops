@@ -34,7 +34,7 @@ const batchJobSchema = z.object({
     if (!value.targetDirectory) ctx.addIssue({ code: 'custom', path: ['targetDirectory'], message: '请填写目标目录' })
     if (!value.fileName) ctx.addIssue({ code: 'custom', path: ['fileName'], message: '请填写文件名' })
   }
-  if (value.type === 'upload_file' && !value.fileContentBase64) {
+  if (value.type === 'upload_file' && value.fileContentBase64 === undefined) {
     ctx.addIssue({ code: 'custom', path: ['fileContentBase64'], message: '请上传文件' })
   }
   if (value.type === 'run_script' && !value.script?.trim()) {

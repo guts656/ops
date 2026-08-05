@@ -6,19 +6,25 @@ import { authenticate } from '../middleware/authenticate.ts'
 import { requirePermission } from '../middleware/requirePermission.ts'
 import { sendNotificationTest } from '../services/outboundNotificationService.ts'
 
-const channelSchema = z.enum(['站内告警', '企业微信', '钉钉'])
 const outboundChannelSchema = z.enum(['企业微信', '钉钉'])
 
 const channelSettingSchema = z.object({
   enabled: z.boolean().optional().default(false),
   webhookUrl: z.string().trim().url().optional().or(z.literal('')),
   receivers: z.string().trim().max(200).optional().or(z.literal('')),
+  keyword: z.string().trim().max(100).optional().or(z.literal('')),
 })
 
 const outboundNotificationSettingsSchema = z.object({
-  defaultChannels: z.array(channelSchema).min(1).max(3),
+  inApp: z.object({ enabled: z.boolean() }),
   dingTalk: channelSettingSchema,
   weCom: channelSettingSchema,
+}).superRefine((value, context) => {
+  for (const [key, label] of [['dingTalk', '钉钉'], ['weCom', '企业微信']] as const) {
+    if (value[key].enabled && !value[key].webhookUrl?.trim()) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: [key, 'webhookUrl'], message: `启用${label}时必须填写 Webhook URL` })
+    }
+  }
 })
 
 const tradingTimeRangeSchema = z.object({
@@ -40,6 +46,7 @@ const dashboardTradingSessionSettingsSchema = z.object({
 const testSchema = z.object({
   channel: outboundChannelSchema,
   webhookUrl: z.string().trim().url().optional().or(z.literal('')),
+  keyword: z.string().trim().max(100).optional().or(z.literal('')),
   content: z.string().trim().max(1000).optional(),
 })
 
@@ -87,7 +94,7 @@ router.post('/outbound-notifications/test', requirePermission(PERMISSIONS.SETTIN
     const savedUrl = values.channel === '钉钉' ? settings.dingTalk.webhookUrl : settings.weCom.webhookUrl
     const webhookUrl = values.webhookUrl?.trim() || savedUrl || ''
     const content = values.content || `【告警通知测试】运维平台正在测试${values.channel}机器人消息，请确认可以收到。`
-    res.json({ data: { results: await sendNotificationTest({ channel: values.channel, webhookUrl, content }) } })
+    res.json({ data: { results: await sendNotificationTest({ channel: values.channel, webhookUrl, keyword: values.keyword, content }) } })
   } catch (error) {
     next(error)
   }

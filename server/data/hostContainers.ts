@@ -86,12 +86,65 @@ function containerLogicalKey(container: Pick<AgentContainerInput, 'name' | 'labe
   return `name:${normalizeContainerName(container.name)}`
 }
 
+function containerServiceName(container: Pick<HostContainerRow, 'name' | 'labels'>) {
+  const labels = labelsOf(container.labels)
+  return labelString(labels, ['com.docker.swarm.service.name', 'com.docker.compose.service']) || normalizeContainerName(container.name)
+}
+
+function containerReplacementKey(container: { name: string; labels?: unknown; logicalKey?: string | null }) {
+  const labels = labelsOf(container.labels)
+  const serviceName = labelString(labels, ['com.docker.swarm.service.name'])
+  if (!serviceName) return container.logicalKey || `name:${normalizeContainerName(container.name)}`
+  const taskName = labelString(labels, ['com.docker.swarm.task.name']) || container.name
+  const suffix = taskName.startsWith(`${serviceName}.`) ? taskName.slice(serviceName.length + 1) : ''
+  const slot = suffix.split('.')[0]
+  return `${container.logicalKey || `swarm:${serviceName}`}:slot:${/^\d+$/.test(slot) ? slot : 'unknown'}`
+}
+
 function normalizedState(state: string | null | undefined) {
   return String(state || '').trim().toLowerCase()
 }
 
 function isActiveState(state: string) {
   return ['running', 'restarting', 'paused', 'created'].includes(normalizedState(state))
+}
+
+type ExistingContainerSnapshot = Pick<HostContainerRow, 'containerId' | 'name' | 'labels' | 'logicalKey' | 'state' | 'restartCount' | 'isCurrent'>
+type ContainerRestartPair = { previousContainerId: string; currentContainerId: string }
+
+export function detectContainerRestartEvents(existing: ExistingContainerSnapshot[], containers: AgentContainerInput[]) {
+  const previousById = new Map(existing.map((container) => [container.containerId, container]))
+  const incoming = containers.map((container) => ({ container, logicalKey: containerLogicalKey(container) }))
+  const incomingById = new Map(incoming.map((item) => [item.container.containerId, item]))
+  const stoppedPreviousByKey = new Map<string, ExistingContainerSnapshot[]>()
+
+  for (const previous of existing.filter((container) => container.isCurrent)) {
+    const reported = incomingById.get(previous.containerId)
+    if (reported && isActiveState(reported.container.state)) continue
+    const key = containerReplacementKey({
+      name: reported?.container.name || previous.name,
+      labels: reported?.container.labels || previous.labels,
+      logicalKey: reported?.logicalKey || previous.logicalKey,
+    })
+    stoppedPreviousByKey.set(key, [...(stoppedPreviousByKey.get(key) ?? []), previous])
+  }
+
+  const replacementPairs: ContainerRestartPair[] = []
+  for (const { container, logicalKey } of incoming.filter(({ container }) => isActiveState(container.state) && !previousById.has(container.containerId))) {
+    const key = containerReplacementKey({ name: container.name, labels: container.labels, logicalKey })
+    const candidates = stoppedPreviousByKey.get(key) ?? []
+    const previous = candidates.shift()
+    if (previous) replacementPairs.push({ previousContainerId: previous.containerId, currentContainerId: container.containerId })
+  }
+
+  const restartCountPairs = incoming.flatMap(({ container }) => {
+    const previous = previousById.get(container.containerId)
+    return previous && (container.restartCount ?? 0) > previous.restartCount
+      ? [{ previousContainerId: previous.containerId, currentContainerId: container.containerId }]
+      : []
+  })
+
+  return { replacementPairs, restartCountPairs }
 }
 
 function isHealthyContainerState(state: string | null | undefined) {
@@ -104,6 +157,61 @@ function isAbnormalContainerState(state: string | null | undefined) {
 
 function containerAlertFingerprint(hostId: string, container: Pick<HostContainerRow, 'containerId' | 'logicalKey' | 'name'>) {
   return `agent-container:${hostId}:${container.logicalKey || container.containerId || normalizeContainerName(container.name)}:abnormal`
+}
+
+function containerRestartFingerprint(hostId: string, container: Pick<HostContainerRow, 'containerId' | 'restartCount'>) {
+  return `agent-container-restart:${hostId}:${container.containerId}:${container.restartCount}`
+}
+
+function exitCodeFromStatus(status: string | null | undefined) {
+  const matched = String(status || '').match(/Exited\s*\((-?\d+)\)/i)
+  return matched ? Number(matched[1]) : undefined
+}
+
+export function containerRestartAlertLevel(status: string | null | undefined) {
+  const exitCode = exitCodeFromStatus(status)
+  return exitCode !== undefined && exitCode !== 0 ? '严重' as const : '警告' as const
+}
+
+async function createContainerRestartAlert(host: HostSummary, current: HostContainerRow, previous: HostContainerRow, reason: 'task_replaced' | 'restart_count_increased') {
+  const serviceName = containerServiceName(current)
+  const exitCode = exitCodeFromStatus(previous.status)
+  const restartDelta = Math.max(1, current.restartCount - previous.restartCount)
+  const reasonText = reason === 'task_replaced'
+    ? `旧任务 ${previous.name}（${previous.containerId.slice(0, 12)}）退出后，由新任务 ${current.name}（${current.containerId.slice(0, 12)}）接管`
+    : `容器重启次数从 ${previous.restartCount} 增加到 ${current.restartCount}（本次增加 ${restartDelta}）`
+  await ingestAlert({
+    source: 'Agent容器监控',
+    level: containerRestartAlertLevel(previous.status),
+    service: `container:${serviceName}`,
+    title: `容器发生重启：${serviceName}`,
+    content: `主机 ${host.ip} · ${host.hostname} 上的容器服务 ${serviceName} 发生重启。${reasonText}。旧状态：${previous.state} / ${previous.status}；当前状态：${current.state} / ${current.status}；镜像：${current.image}。`,
+    owner: host.owner || 'Agent容器监控',
+    relatedType: 'host_container',
+    relatedId: current.id,
+    fingerprint: containerRestartFingerprint(host.id, current),
+    metadata: {
+      hostId: host.id,
+      hostIp: host.ip,
+      hostname: host.hostname,
+      eventType: reason === 'task_replaced' ? 'container_task_replaced' : 'container_restart_count_increased',
+      logicalKey: current.logicalKey,
+      serviceName,
+      image: current.image,
+      previousContainerId: previous.containerId,
+      previousContainerName: previous.name,
+      previousState: previous.state,
+      previousStatus: previous.status,
+      previousRestartCount: previous.restartCount,
+      currentContainerId: current.containerId,
+      currentContainerName: current.name,
+      currentState: current.state,
+      currentStatus: current.status,
+      currentRestartCount: current.restartCount,
+      restartDelta,
+      exitCode,
+    },
+  })
 }
 
 async function createContainerAlert(host: HostSummary, container: HostContainerRow, previousState: string | undefined, currentState: string) {
@@ -197,6 +305,7 @@ export async function ingestHostContainers(hostId: string, containers: AgentCont
   const reportedIds = containers.map((container) => container.containerId)
   const incoming = containers.map((container) => ({ container, data: containerData(container, now) }))
   const activeLogicalKeys = new Set(incoming.filter(({ container }) => isActiveState(container.state)).map(({ data }) => data.logicalKey))
+  const { replacementPairs, restartCountPairs } = detectContainerRestartEvents(existing, containers)
   const changedIds = new Set<string>()
   await prisma.$transaction(async (tx) => {
     const missing = await tx.hostContainer.findMany({ where: { hostId, containerId: { notIn: reportedIds }, state: { not: 'missing' } }, select: { containerId: true } })
@@ -234,6 +343,22 @@ export async function ingestHostContainers(hostId: string, containers: AgentCont
 
   const abnormalCurrent = await prisma.hostContainer.findMany({ where: { hostId, state: { in: [...abnormalContainerStates] } } })
   for (const container of abnormalCurrent) await syncContainerAlert(host, container, previousById.get(container.containerId)?.state)
+
+  const restartContainerIds = Array.from(new Set([...replacementPairs, ...restartCountPairs].flatMap((pair) => [pair.previousContainerId, pair.currentContainerId])))
+  const restartContainers = restartContainerIds.length
+    ? await prisma.hostContainer.findMany({ where: { hostId, containerId: { in: restartContainerIds } } })
+    : []
+  const restartContainersById = new Map(restartContainers.map((container) => [container.containerId, container]))
+  for (const pair of replacementPairs) {
+    const previous = restartContainersById.get(pair.previousContainerId)
+    const current = restartContainersById.get(pair.currentContainerId)
+    if (previous && current) await createContainerRestartAlert(host, current, previous, 'task_replaced')
+  }
+  for (const pair of restartCountPairs) {
+    const previous = previousById.get(pair.previousContainerId)
+    const current = restartContainersById.get(pair.currentContainerId)
+    if (previous && current) await createContainerRestartAlert(host, current, previous, 'restart_count_increased')
+  }
 
   return containers.length
 }

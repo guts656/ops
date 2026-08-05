@@ -13,7 +13,7 @@ const defaultRule = {
   logic: 'AND',
   conditions: [{ dataSource: '指标', metric: 'cpu_usage', service: '主机ID/hostname/IP', operator: '>', threshold: 85, windowValue: 5, windowUnit: '分钟', intervalValue: 30, intervalUnit: '秒' }],
   actions: [{ type: '重启服务', target: '目标服务名', retries: 1, cooldown: 10 }],
-  notification: { channels: ['钉钉'], receivers: '', template: '规则 {{ruleName}} 已触发，服务 {{service}} 当前值 {{value}}。' },
+  notification: { channels: [], receivers: '', template: '规则 {{ruleName}} 已触发，服务 {{service}} 当前值 {{value}}。' },
 }
 
 const templates = [
@@ -233,11 +233,8 @@ export default function RuleFormDrawer({ open, editingRule, saving = false, onCl
         </Card>
 
         <Card title="通知配置" className="self-healing-form-card">
-          <Form.Item name={['notification', 'channels']} label="通知渠道">
-            <Checkbox.Group options={['钉钉', '企业微信', '邮件']} />
-          </Form.Item>
-          <Form.Item name={['notification', 'receivers']} label="接收人">
-            <Input placeholder="例如：SRE 值班群、user@example.com" />
+          <Form.Item name={['notification', 'receivers']} label="负责人">
+            <Input placeholder="例如：SRE 值班组、张三" />
           </Form.Item>
           <Form.Item name={['notification', 'template']} label="通知模板（支持变量）">
             <Input.TextArea rows={4} placeholder="可使用 {{ruleName}}、{{service}}、{{value}} 等变量" />

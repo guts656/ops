@@ -2,7 +2,7 @@ import type { AgentBackendCandidateResult, AgentInstallOptions, AgentOperationRe
 import { runSshCommand, testSshConnection } from './ssh.ts'
 import { runWinrmCommand, testWinrmConnection, uploadWinrmFile } from './winrm.ts'
 
-export const AGENT_VERSION = 'v2.10.13'
+export const AGENT_VERSION = 'v2.10.20'
 
 function toOperationResult(result: RemoteCommandResult): AgentOperationResult {
   return { ...result, status: result.success ? 'success' : 'failed' }
@@ -682,6 +682,76 @@ function parseMetricsOutput(result: RemoteCommandResult): RemoteMetricsResult {
   }
 }
 
+const windowsAgentTaskRepairTemplate = `$ErrorActionPreference = 'Continue'
+$base = '__BASE__'
+$scriptPath = '__SCRIPT_PATH__'
+$configPath = '__CONFIG_PATH__'
+$statusPath = Join-Path $base 'task-repair-status.txt'
+try {
+  Start-Sleep -Seconds 5
+  $intervalMinutes = 1
+  try {
+    $configRaw = [System.IO.File]::ReadAllText($configPath, [Text.Encoding]::UTF8)
+    $match = [regex]::Match($configRaw, '"intervalSeconds"\\s*:\\s*([0-9]+)')
+    if ($match.Success) { $intervalMinutes = [Math]::Max(1, [Math]::Ceiling([double]$match.Groups[1].Value / 60)) }
+  } catch {}
+  $taskAction = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '" once'
+  $created = $false
+  for ($attempt = 1; $attempt -le 30; $attempt += 1) {
+    & schtasks.exe /Create /TN OpsPlatformAgent /SC MINUTE /MO $intervalMinutes /RU SYSTEM /RL HIGHEST /TR $taskAction /F | Out-Null
+    if ($LASTEXITCODE -eq 0) { $created = $true; break }
+    Start-Sleep -Seconds 2
+  }
+  if (-not $created) { throw 'scheduled task create failed after retries' }
+  $arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '" once'
+  Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden
+  [System.IO.File]::WriteAllText($statusPath, "success $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') interval=$intervalMinutes", [Text.Encoding]::ASCII)
+} catch {
+  try { [System.IO.File]::WriteAllText($statusPath, "failed $([string]$_.Exception.Message)", [Text.Encoding]::ASCII) } catch {}
+} finally {
+  Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+}
+`
+
+const windowsAgentWatchdogTemplate = `$ErrorActionPreference = 'Continue'
+$base = '__BASE__'
+$scriptPath = '__SCRIPT_PATH__'
+$configPath = '__CONFIG_PATH__'
+$heartbeatPath = Join-Path $base 'heartbeat'
+$statusPath = Join-Path $base 'watchdog-status.txt'
+$staleSeconds = 180
+try {
+  $stale = $true
+  if (Test-Path -LiteralPath $heartbeatPath) {
+    try {
+      $age = (Get-Date) - (Get-Item -LiteralPath $heartbeatPath).LastWriteTime
+      $stale = $age.TotalSeconds -ge $staleSeconds
+    } catch {}
+  }
+  if (-not $stale) { exit 0 }
+
+  cmd.exe /c "schtasks.exe /End /TN OpsPlatformAgent >nul 2>nul" | Out-Null
+  Start-Sleep -Seconds 2
+  & schtasks.exe /Run /TN OpsPlatformAgent | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    $intervalMinutes = 1
+    try {
+      $configRaw = [System.IO.File]::ReadAllText($configPath, [Text.Encoding]::UTF8)
+      $match = [regex]::Match($configRaw, '"intervalSeconds"\\s*:\\s*([0-9]+)')
+      if ($match.Success) { $intervalMinutes = [Math]::Max(1, [Math]::Ceiling([double]$match.Groups[1].Value / 60)) }
+    } catch {}
+    $taskAction = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '" once'
+    & schtasks.exe /Create /TN OpsPlatformAgent /SC MINUTE /MO $intervalMinutes /RU SYSTEM /RL HIGHEST /TR $taskAction /F | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "scheduled task recreate failed: $LASTEXITCODE" }
+    & schtasks.exe /Run /TN OpsPlatformAgent | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "scheduled task restart failed: $LASTEXITCODE" }
+  }
+  [System.IO.File]::WriteAllText($statusPath, "restarted $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')", [Text.Encoding]::ASCII)
+} catch {
+  try { [System.IO.File]::WriteAllText($statusPath, "failed $([string]$_.Exception.Message)", [Text.Encoding]::ASCII) } catch {}
+}
+`
+
 const windowsAgentUpdaterTemplate = `$ErrorActionPreference = 'Continue'
 $base = '__BASE__'
 $tempPath = '__TEMP_PATH__'
@@ -746,7 +816,21 @@ try {
   [System.IO.File]::WriteAllText((Join-Path $base 'agent-info.json'), $info, [Text.Encoding]::UTF8)
   $selfPath = $MyInvocation.MyCommand.Path
   Post-UpdateResult $true "Agent updated to $targetVersion" "script=$scriptPath; updater=$selfPath" ''
-  try { schtasks /Run /TN OpsPlatformAgent | Out-Null } catch {}
+  $intervalMinutes = 1
+  try {
+    $match = [regex]::Match($configRaw, '"intervalSeconds"\\s*:\\s*([0-9]+)')
+    if ($match.Success) { $intervalMinutes = [Math]::Max(1, [Math]::Ceiling([double]$match.Groups[1].Value / 60)) }
+  } catch {}
+  $taskAction = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '" once'
+  $created = $false
+  for ($attempt = 1; $attempt -le 30; $attempt += 1) {
+    & schtasks.exe /Create /TN OpsPlatformAgent /SC MINUTE /MO $intervalMinutes /RU SYSTEM /RL HIGHEST /TR $taskAction /F | Out-Null
+    if ($LASTEXITCODE -eq 0) { $created = $true; break }
+    Start-Sleep -Seconds 2
+  }
+  if (-not $created) { throw 'scheduled task create failed after retries' }
+  $arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '" once'
+  Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden
 } catch {
   try { Post-UpdateResult $false "Agent update failed: $($_.Exception.Message)" '' ([string]$_.Exception.Message) } catch {}
 } finally {
@@ -819,17 +903,55 @@ function Read-SimpleJsonValue($raw, $name) {
     }
     return $items
   }
+  if ($pos + 4 -le $raw.Length -and $raw.Substring($pos, 4) -eq 'true') { return $true }
+  if ($pos + 5 -le $raw.Length -and $raw.Substring($pos, 5) -eq 'false') { return $false }
+  if ($pos + 4 -le $raw.Length -and $raw.Substring($pos, 4) -eq 'null') { return $null }
   $start = $pos
   while ($pos -lt $raw.Length -and '0123456789'.IndexOf([string]$raw[$pos]) -ge 0) { $pos += 1 }
   if ($pos -gt $start) { return [int64]$raw.Substring($start, $pos - $start) }
   return $null
 }
+function Read-SimpleJsonObjectText($raw, $name) {
+  $quote = [string][char]34
+  $needle = $quote + $name + $quote
+  $nameIndex = $raw.IndexOf($needle)
+  if ($nameIndex -lt 0) { return $null }
+  $colon = $raw.IndexOf(':', $nameIndex + $needle.Length)
+  if ($colon -lt 0) { return $null }
+  $pos = $colon + 1
+  while ($pos -lt $raw.Length -and [char]::IsWhiteSpace($raw[$pos])) { $pos += 1 }
+  if ($pos -ge $raw.Length -or $raw[$pos] -ne '{') { return $null }
+  $start = $pos
+  $depth = 0
+  $inString = $false
+  $escaped = $false
+  for (; $pos -lt $raw.Length; $pos += 1) {
+    $ch = $raw[$pos]
+    if ($inString) {
+      if ($escaped) { $escaped = $false }
+      elseif ($ch -eq ([char]92)) { $escaped = $true }
+      elseif ($ch -eq ([char]34)) { $inString = $false }
+      continue
+    }
+    if ($ch -eq ([char]34)) { $inString = $true }
+    elseif ($ch -eq '{') { $depth += 1 }
+    elseif ($ch -eq '}') {
+      $depth -= 1
+      if ($depth -eq 0) { return $raw.Substring($start, $pos - $start + 1) }
+    }
+  }
+  return $null
+}
 function ConvertFrom-SimpleJson($text) {
   $object = New-Object PSObject
   $raw = [string]$text
-  foreach ($name in @('hostId', 'agentVersion', 'agentToken', 'apiBaseUrl', 'intervalSeconds', 'paths', 'version', 'scriptBase64', 'targetVersion', 'type', 'id', 'mode', 'rulesText')) {
+  foreach ($name in @('hostId', 'agentVersion', 'agentToken', 'apiBaseUrl', 'intervalSeconds', 'paths', 'version', 'scriptBase64', 'targetVersion', 'type', 'id', 'mode', 'rulesText', 'action', 'batchJobId', 'batchTargetId', 'timeoutSeconds', 'targetDirectory', 'fileName', 'remotePath', 'fileContentBase64', 'expectedMd5', 'maxFileSize', 'persistArtifact', 'serviceId', 'serviceName')) {
     $value = Read-SimpleJsonValue $raw $name
     if ($null -ne $value) { $object | Add-Member -MemberType NoteProperty -Name $name -Value $value -Force }
+  }
+  $jobText = Read-SimpleJsonObjectText $raw 'job'
+  if (-not [string]::IsNullOrEmpty([string]$jobText)) {
+    $object | Add-Member -MemberType NoteProperty -Name 'job' -Value (ConvertFrom-SimpleJson $jobText) -Force
   }
   return $object
 }
@@ -908,6 +1030,30 @@ function ConvertTo-OpsJson($value) {
 $config = ConvertFrom-OpsJson (Read-AllText $configPath)
 $headers = @{ Authorization = "Bearer $($config.agentToken)"; 'Content-Type' = 'application/json; charset=utf-8' }
 
+function Ensure-AgentWatchdog {
+  try {
+    $watchdogPath = Join-Path $base 'ops-platform-agent-watchdog.ps1'
+    $watchdogText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(windowsAgentWatchdogTemplate, 'utf8').toString('base64')}'))
+    $watchdogText = $watchdogText.Replace('__BASE__', $base.Replace("'", "''"))
+    $watchdogText = $watchdogText.Replace('__SCRIPT_PATH__', (Join-Path $base 'ops-platform-agent.ps1').Replace("'", "''"))
+    $watchdogText = $watchdogText.Replace('__CONFIG_PATH__', $configPath.Replace("'", "''"))
+    $writeWatchdog = $true
+    if (Test-Path -LiteralPath $watchdogPath) {
+      try { $writeWatchdog = ([System.IO.File]::ReadAllText($watchdogPath, [Text.Encoding]::UTF8) -ne $watchdogText) } catch {}
+    }
+    if ($writeWatchdog) { [System.IO.File]::WriteAllText($watchdogPath, $watchdogText, [Text.Encoding]::UTF8) }
+
+    cmd.exe /c "schtasks.exe /Query /TN OpsPlatformAgentWatchdog >nul 2>nul" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      $watchdogAction = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $watchdogPath + '"'
+      & schtasks.exe /Create /TN OpsPlatformAgentWatchdog /SC MINUTE /MO 1 /RU SYSTEM /RL HIGHEST /TR $watchdogAction /F | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "watchdog task create failed: $LASTEXITCODE" }
+    }
+  } catch {
+    Write-Output "watchdog setup skipped: $($_.Exception.Message)"
+  }
+}
+
 function NowIso { (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
 function New-AgentState {
   $state = New-Object PSObject
@@ -915,6 +1061,7 @@ function New-AgentState {
   $state | Add-Member -MemberType NoteProperty -Name eventRecordIds -Value (New-Object PSObject) -Force
   $state | Add-Member -MemberType NoteProperty -Name runningServices -Value @() -Force
   $state | Add-Member -MemberType NoteProperty -Name fileLogOffsets -Value (New-Object PSObject) -Force
+  $state | Add-Member -MemberType NoteProperty -Name fileLogLineNumbers -Value (New-Object PSObject) -Force
   return $state
 }
 function New-EmptyObject { New-Object PSObject }
@@ -927,6 +1074,7 @@ function Ensure-AgentState($state) {
   if ((-not $state.PSObject.Properties['eventRecordIds']) -or -not (Is-ObjectState $state.eventRecordIds)) { $state | Add-Member -MemberType NoteProperty -Name eventRecordIds -Value (New-EmptyObject) -Force }
   if (-not $state.PSObject.Properties['runningServices']) { $state | Add-Member -MemberType NoteProperty -Name runningServices -Value @() -Force }
   if ((-not $state.PSObject.Properties['fileLogOffsets']) -or -not (Is-ObjectState $state.fileLogOffsets)) { $state | Add-Member -MemberType NoteProperty -Name fileLogOffsets -Value (New-EmptyObject) -Force }
+  if ((-not $state.PSObject.Properties['fileLogLineNumbers']) -or -not (Is-ObjectState $state.fileLogLineNumbers)) { $state | Add-Member -MemberType NoteProperty -Name fileLogLineNumbers -Value (New-EmptyObject) -Force }
   return $state
 }
 function Load-State {
@@ -1084,8 +1232,9 @@ function Collect-Services {
   }
 }
 function Collect-ServiceEvents($state, $services) {
-  $running = @($services | Where-Object { $_.status -eq 'Running' } | ForEach-Object { $_.name })
-  $failed = @($services | Where-Object { $_.status -ne 'Running' } | ForEach-Object { $_.name })
+  $monitoredServices = @($services | Where-Object { $_.metadata.systemService -ne $true })
+  $running = @($monitoredServices | Where-Object { $_.status -eq 'Running' } | ForEach-Object { $_.name })
+  $failed = @($monitoredServices | Where-Object { $_.status -ne 'Running' } | ForEach-Object { $_.name })
   $previousRunning = @($state.runningServices)
   $state.runningServices = $running
   $state.failedServices = $failed
@@ -1197,7 +1346,6 @@ function Invoke-BatchFileJob($job) {
     if (Is-Blank $fileName) { throw 'missing fileName' }
     if ($action -eq 'upload_file') {
       $contentBase64 = [string]$job.fileContentBase64
-      if (Is-Blank $contentBase64) { throw 'missing file content' }
       $content = [Convert]::FromBase64String($contentBase64)
       New-Item -ItemType Directory -Force -Path $targetDirectory | Out-Null
       [System.IO.File]::WriteAllBytes($remotePath, $content)
@@ -1238,7 +1386,7 @@ function Invoke-BatchFileJob($job) {
     $summary = "Batch file operation failed: $stderr"
   }
   $payload = @{ success = $success; summary = $summary; stdout = $stdout; stderr = $stderr; exitCode = $exitCode; remotePath = $remotePath; bytes = $bytes; md5 = $md5; preview = $preview }
-  if ($action -eq 'download_file' -and $success -and -not (Is-Blank $contentBase64)) { $payload.contentBase64 = $contentBase64 }
+  if ($action -eq 'download_file' -and $success) { $payload.contentBase64 = $contentBase64 }
   Post-Json "/api/agent/hosts/$($config.hostId)/jobs/$($job.id)/result" $payload
 }
 function Set-AgentVersion($targetVersion) {
@@ -1283,6 +1431,17 @@ function Write-AgentUpdater($targetVersion, $tempPath, $scriptPath, $jobId) {
   [System.IO.File]::WriteAllText($updaterPath, $updaterText, [Text.Encoding]::UTF8)
   return $updaterPath
 }
+function Start-AgentTaskRepair($scriptPath) {
+  $repairPath = Join-Path $base 'ops-platform-agent-task-repair.ps1'
+  $repairText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(windowsAgentTaskRepairTemplate, 'utf8').toString('base64')}'))
+  $repairText = $repairText.Replace('__BASE__', (Escape-PsSingle $base))
+  $repairText = $repairText.Replace('__SCRIPT_PATH__', (Escape-PsSingle $scriptPath))
+  $repairText = $repairText.Replace('__CONFIG_PATH__', (Escape-PsSingle $configPath))
+  [System.IO.File]::WriteAllText($repairPath, $repairText, [Text.Encoding]::UTF8)
+  $arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $repairPath + '"'
+  Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden
+  return $repairPath
+}
 function Invoke-AgentUpdateJob($job) {
   $success = $false
   $stdout = ''
@@ -1303,9 +1462,9 @@ function Invoke-AgentUpdateJob($job) {
     try {
       Install-AgentUpdatePackage $targetVersion $tempPath $scriptPath
       $success = $true
-      $stdout = "script=$scriptPath; mode=direct"
+      $repairPath = Start-AgentTaskRepair $scriptPath
+      $stdout = "script=$scriptPath; mode=direct; taskRepair=$repairPath"
       $summary = "Agent updated to $targetVersion"
-      try { schtasks /Run /TN OpsPlatformAgent | Out-Null } catch {}
     } catch {
       $directError = [string]$_.Exception.Message
       $updaterPath = Write-AgentUpdater $targetVersion $tempPath $scriptPath ([string]$job.id)
@@ -1451,18 +1610,43 @@ function Trim-TrailingCr($buffer) {
   }
   return $buffer
 }
-function New-LogReadEntry($offset, $text, $nextOffset) {
+function New-LogReadEntry($offset, $text, $nextOffset, $lineNumber) {
   $entry = New-Object PSObject
   $entry | Add-Member -MemberType NoteProperty -Name Offset -Value $offset -Force
   $entry | Add-Member -MemberType NoteProperty -Name Text -Value $text -Force
   $entry | Add-Member -MemberType NoteProperty -Name NextOffset -Value $nextOffset -Force
+  $entry | Add-Member -MemberType NoteProperty -Name LineNumber -Value ([int64]$lineNumber) -Force
   return $entry
 }
-function New-LogReadResult($lines, $position) {
+function New-LogReadResult($lines, $position, $lineNumber) {
   $result = New-Object PSObject
   $result | Add-Member -MemberType NoteProperty -Name Lines -Value @($lines) -Force
   $result | Add-Member -MemberType NoteProperty -Name Position -Value $position -Force
+  $result | Add-Member -MemberType NoteProperty -Name LineNumber -Value ([int64]$lineNumber) -Force
   return $result
+}
+function Get-PhysicalLineCount($pathKey, $offset) {
+  if ($offset -le 0) { return [int64]0 }
+  $count = [int64]0
+  $lastByte = -1
+  $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+  $stream = [System.IO.File]::Open($pathKey, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+  try {
+    $remaining = [Math]::Min([int64]$offset, [int64]$stream.Length)
+    $buffer = New-Object byte[] 65536
+    while ($remaining -gt 0) {
+      $readSize = [int][Math]::Min([int64]$buffer.Length, $remaining)
+      $read = $stream.Read($buffer, 0, $readSize)
+      if ($read -le 0) { break }
+      for ($index = 0; $index -lt $read; $index++) {
+        $lastByte = [int]$buffer[$index]
+        if ($lastByte -eq 10) { $count += 1 }
+      }
+      $remaining -= $read
+    }
+  } finally { $stream.Close() }
+  if ($lastByte -ge 0 -and $lastByte -ne 10) { $count += 1 }
+  return $count
 }
 function Read-LastLines($pathKey, $count) {
   $buffer = New-Object 'System.Collections.ArrayList'
@@ -1484,25 +1668,28 @@ function Read-LastLines($pathKey, $count) {
   } catch {}
   $buffer
 }
-function Read-ConfiguredLogFile($pathKey, $last, $maxLines) {
+function Read-ConfiguredLogFile($pathKey, $last, $maxLines, $lastLineNumber) {
   $lines = @()
   $position = $last
+  $lineNumber = [int64]$lastLineNumber
   $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
   try {
     $stream = [System.IO.File]::Open($pathKey, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
     try {
-      if ($last -gt $stream.Length) { $last = 0 }
+      if ($last -gt $stream.Length) { $last = 0; $lineNumber = 0 }
+      if ($lineNumber -lt 0) { $lineNumber = Get-PhysicalLineCount $pathKey $last }
       if ($last -eq 0 -and $stream.Length -gt 1048576) {
         $tailLines = @(Read-LastLines $pathKey 200)
-        $tailOffset = [Math]::Max([int64]0, [int64]$stream.Length - 1048576)
+        $lineNumber = Get-PhysicalLineCount $pathKey $stream.Length
+        $firstTailLineNumber = [Math]::Max([int64]1, $lineNumber - $tailLines.Count + 1)
         $tailIndex = 0
         foreach ($line in $tailLines) {
           if (-not (Is-Blank $line)) {
-            $lines += (New-LogReadEntry ($tailOffset + $tailIndex) ([string]$line) $stream.Length)
-            $tailIndex += 1
+            $lines += (New-LogReadEntry 0 ([string]$line) $stream.Length ($firstTailLineNumber + $tailIndex))
           }
+          $tailIndex += 1
         }
-        return New-LogReadResult $lines $stream.Length
+        return New-LogReadResult $lines $stream.Length $lineNumber
       }
       $stream.Seek($last, [System.IO.SeekOrigin]::Begin) | Out-Null
       $position = $stream.Position
@@ -1512,10 +1699,11 @@ function Read-ConfiguredLogFile($pathKey, $last, $maxLines) {
         $value = $stream.ReadByte()
         if ($value -lt 0) { break }
         if ($value -eq 10) {
+          $lineNumber += 1
           $nextOffset = $stream.Position
           $buffer = Trim-TrailingCr $bytes.ToArray()
           $line = [Text.Encoding]::UTF8.GetString([byte[]]$buffer)
-          if (-not (Is-Blank $line)) { $lines += (New-LogReadEntry $lineStart $line $nextOffset) }
+          if (-not (Is-Blank $line)) { $lines += (New-LogReadEntry $lineStart $line $nextOffset $lineNumber) }
           $bytes.Clear()
           $lineStart = $stream.Position
           $position = $nextOffset
@@ -1524,21 +1712,29 @@ function Read-ConfiguredLogFile($pathKey, $last, $maxLines) {
         }
       }
       if ($bytes.Count -gt 0 -and $stream.Position -eq $stream.Length -and $lines.Count -lt $maxLines) {
+        $lineNumber += 1
         $buffer = Trim-TrailingCr $bytes.ToArray()
         $line = [Text.Encoding]::UTF8.GetString([byte[]]$buffer)
         $nextOffset = $stream.Position
-        if (-not (Is-Blank $line)) { $lines += (New-LogReadEntry $lineStart $line $nextOffset) }
+        if (-not (Is-Blank $line)) { $lines += (New-LogReadEntry $lineStart $line $nextOffset $lineNumber) }
         $position = $nextOffset
       }
     } finally {
       $stream.Close()
     }
   } catch {
-    $lines = @(Read-LastLines $pathKey 200 | ForEach-Object { New-LogReadEntry 0 $_ $null })
     $item = Get-Item -LiteralPath $pathKey -ErrorAction SilentlyContinue
-    if ($item) { $position = $item.Length }
+    if ($item) {
+      $position = $item.Length
+      $lineNumber = Get-PhysicalLineCount $pathKey $position
+      $tailLines = @(Read-LastLines $pathKey 200)
+      $firstTailLineNumber = [Math]::Max([int64]1, $lineNumber - $tailLines.Count + 1)
+      for ($index = 0; $index -lt $tailLines.Count; $index++) {
+        if (-not (Is-Blank $tailLines[$index])) { $lines += (New-LogReadEntry 0 $tailLines[$index] $null ($firstTailLineNumber + $index)) }
+      }
+    }
   }
-  New-LogReadResult $lines $position
+  New-LogReadResult $lines $position $lineNumber
 }
 function Collect-ConfiguredLogs($state, $collectionStatus) {
   $logs = @()
@@ -1546,6 +1742,7 @@ function Collect-ConfiguredLogs($state, $collectionStatus) {
   $paths = if ($configResponse -and $configResponse.paths) { @($configResponse.paths) } else { @() }
   if ($collectionStatus) { $collectionStatus.configPaths = @($paths) }
   if (-not $state.fileLogOffsets) { $state | Add-Member -MemberType NoteProperty -Name fileLogOffsets -Value (New-Object PSObject) -Force }
+  if (-not $state.fileLogLineNumbers) { $state | Add-Member -MemberType NoteProperty -Name fileLogLineNumbers -Value (New-Object PSObject) -Force }
   foreach ($pathValue in $paths | Select-Object -First 20) {
     $expandedPath = Expand-DateTemplate $pathValue
     $pathReadLines = 0
@@ -1562,8 +1759,9 @@ function Collect-ConfiguredLogs($state, $collectionStatus) {
         $files += ([string]$pathKey)
         $key = 'v3:' + $pathKey
         $last = Get-StateInt64 $state.fileLogOffsets $key 0
-        if ($last -gt $item.Length) { $last = 0 }
-        $result = Read-ConfiguredLogFile $pathKey $last 500
+        $lastLineNumber = Get-StateInt64 $state.fileLogLineNumbers $key -1
+        if ($last -gt $item.Length) { $last = 0; $lastLineNumber = 0 }
+        $result = Read-ConfiguredLogFile $pathKey $last 500 $lastLineNumber
         foreach ($entry in @($result.Lines)) {
           $line = [string]$entry.Text
           if (Is-Blank $line) { continue }
@@ -1577,6 +1775,7 @@ function Collect-ConfiguredLogs($state, $collectionStatus) {
           $pathUploadedLines += 1
         }
         Set-StateInt64 $state.fileLogOffsets $key $result.Position
+        Set-StateInt64 $state.fileLogLineNumbers $key $result.LineNumber
       }
     } catch {
       $pathError = [string]$_.Exception.Message
@@ -1645,6 +1844,7 @@ function Get-LocalMonitorResult($results, $rule) {
   $item | Add-Member -MemberType NoteProperty -Name matchedKeywords -Value @() -Force
   $item | Add-Member -MemberType NoteProperty -Name matchedSources -Value @() -Force
   $item | Add-Member -MemberType NoteProperty -Name matchedFiles -Value @() -Force
+  $item | Add-Member -MemberType NoteProperty -Name matches -Value @() -Force
   $item | Add-Member -MemberType NoteProperty -Name readLines -Value 0 -Force
   $results[$ruleId] = $item
   return $item
@@ -1671,6 +1871,21 @@ function Test-LocalRuleMatch($rule, $pathKey, $serviceName, $level, $line, $resu
   }
   return $matched
 }
+function Add-LocalMatchEvidence($result, $rule, $pathKey, $lineNumber, $line) {
+  if (@($result.matches).Count -ge 20) { return }
+  $lineKeywords = @()
+  foreach ($keyword in @($rule.Keywords)) {
+    if (([string]$line).IndexOf([string]$keyword, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      $lineKeywords = Add-UniqueText $lineKeywords $keyword 20
+    }
+  }
+  $evidence = New-Object PSObject
+  $evidence | Add-Member -MemberType NoteProperty -Name file -Value (Compact-Text $pathKey 1024) -Force
+  $evidence | Add-Member -MemberType NoteProperty -Name lineNumber -Value ([int64]$lineNumber) -Force
+  $evidence | Add-Member -MemberType NoteProperty -Name line -Value (Compact-Text $line 2000) -Force
+  $evidence | Add-Member -MemberType NoteProperty -Name matchedKeywords -Value @($lineKeywords) -Force
+  $result.matches = @($result.matches) + $evidence
+}
 function Collect-LocalLogMonitor($state, $collectionStatus) {
   $configResponse = Get-Json "/api/agent/hosts/$($config.hostId)/log-monitor-config"
   $paths = if ($configResponse -and $configResponse.paths) { @($configResponse.paths) } else { @() }
@@ -1679,6 +1894,7 @@ function Collect-LocalLogMonitor($state, $collectionStatus) {
   $rules = Parse-LocalMonitorRules $rulesText
   if ($collectionStatus) { $collectionStatus.configPaths = @($paths) }
   if (-not $state.fileLogOffsets) { $state | Add-Member -MemberType NoteProperty -Name fileLogOffsets -Value (New-Object PSObject) -Force }
+  if (-not $state.fileLogLineNumbers) { $state | Add-Member -MemberType NoteProperty -Name fileLogLineNumbers -Value (New-Object PSObject) -Force }
   $results = @{}
   foreach ($rule in $rules) { [void](Get-LocalMonitorResult $results $rule) }
   foreach ($pathValue in $paths | Select-Object -First 20) {
@@ -1696,8 +1912,9 @@ function Collect-LocalLogMonitor($state, $collectionStatus) {
         $files += ([string]$pathKey)
         $key = 'v3:' + $pathKey
         $last = Get-StateInt64 $state.fileLogOffsets $key 0
-        if ($last -gt $item.Length) { $last = 0 }
-        $result = Read-ConfiguredLogFile $pathKey $last 1000
+        $lastLineNumber = Get-StateInt64 $state.fileLogLineNumbers $key -1
+        if ($last -gt $item.Length) { $last = 0; $lastLineNumber = 0 }
+        $result = Read-ConfiguredLogFile $pathKey $last 1000 $lastLineNumber
         $serviceName = [System.IO.Path]::GetFileNameWithoutExtension($item.Name)
         if (Is-Blank $serviceName) { $serviceName = if ($item.Name) { [string]$item.Name } else { 'file' } }
         foreach ($entry in @($result.Lines)) {
@@ -1713,10 +1930,12 @@ function Collect-LocalLogMonitor($state, $collectionStatus) {
               $monitorResult.matchedCount = [int]$monitorResult.matchedCount + 1
               $monitorResult.matchedSources = Add-UniqueText $monitorResult.matchedSources $pathKey 20
               $monitorResult.matchedFiles = Add-UniqueText $monitorResult.matchedFiles $pathKey 20
+              Add-LocalMatchEvidence $monitorResult $rule $pathKey $entry.LineNumber $line
             }
           }
         }
         Set-StateInt64 $state.fileLogOffsets $key $result.Position
+        Set-StateInt64 $state.fileLogLineNumbers $key $result.LineNumber
       }
     } catch {
       $pathError = [string]$_.Exception.Message
@@ -1790,6 +2009,7 @@ function Collect-Logs($state, $collectionStatus) {
   $logs
 }
 function Collect-Once {
+  Ensure-AgentWatchdog
   $state = Load-State
   $services = @()
   try {
@@ -1817,12 +2037,14 @@ function Collect-Once {
   }
   $eventRecordIdsBefore = ConvertTo-OpsJson $state.eventRecordIds
   $fileLogOffsetsBefore = ConvertTo-OpsJson $state.fileLogOffsets
+  $fileLogLineNumbersBefore = ConvertTo-OpsJson $state.fileLogLineNumbers
   $logCollectionStatus = New-LogCollectionStatus
   try {
     Collect-LocalLogMonitor $state $logCollectionStatus
   } catch {
     $state.eventRecordIds = ConvertFrom-OpsJson $eventRecordIdsBefore
     $state.fileLogOffsets = ConvertFrom-OpsJson $fileLogOffsetsBefore
+    $state.fileLogLineNumbers = ConvertFrom-OpsJson $fileLogLineNumbersBefore
     Set-LogCollectionError $logCollectionStatus ([string]$_.Exception.Message)
     Write-Output "logs upload skipped: $($_.Exception.Message)"
   }
@@ -1843,10 +2065,9 @@ if ($args.Count -gt 0 -and $args[0] -eq 'once') { Collect-Once } else { while ($
     cmd.exe /c "schtasks.exe /End /TN OpsPlatformAgent >nul 2>nul" | Out-Null
     cmd.exe /c "schtasks.exe /Delete /TN OpsPlatformAgent /F >nul 2>nul" | Out-Null
     schtasks /Create /TN OpsPlatformAgent /SC MINUTE /MO $intervalMinutes /RU SYSTEM /RL HIGHEST /TR $taskCommand /F | Out-Null
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File $agentScript once
+    if ($LASTEXITCODE -ne 0) { throw "scheduled task create failed: $LASTEXITCODE" }
     schtasks /Run /TN OpsPlatformAgent | Out-Null
-    $task = schtasks /Query /TN OpsPlatformAgent 2>$null
-    if (-not $task) { throw '计划任务创建失败' }
+    if ($LASTEXITCODE -ne 0) { throw "scheduled task start failed: $LASTEXITCODE" }
     Write-Output 'Ops Platform Agent ${AGENT_VERSION} installed via ops-platform-agent.ps1'
   `
 }
@@ -1974,10 +2195,14 @@ ${script}
 Write-Output 'Hardening Agent directory ACL...'
 icacls $base /inheritance:r /grant 'Administrators:(OI)(CI)F' 'SYSTEM:(OI)(CI)F' | Out-Null
 $scriptPath = Join-Path $base 'ops-platform-agent.ps1'
-$taskAction = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '"'
+$taskAction = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '" once'
+$intervalMinutes = [Math]::Max(1, [Math]::Ceiling([double]${options.intervalSeconds} / 60))
 Write-Output 'Creating and starting OpsPlatformAgent scheduled task...'
-& schtasks.exe /Create /TN OpsPlatformAgent /SC ONSTART /RU SYSTEM /TR $taskAction /F | Out-Null
+cmd.exe /c "schtasks.exe /Delete /TN OpsPlatformAgent /F >nul 2>nul" | Out-Null
+& schtasks.exe /Create /TN OpsPlatformAgent /SC MINUTE /MO $intervalMinutes /RU SYSTEM /RL HIGHEST /TR $taskAction /F | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "scheduled task create failed: $LASTEXITCODE" }
 & schtasks.exe /Run /TN OpsPlatformAgent | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "scheduled task start failed: $LASTEXITCODE" }
 
 Write-Output 'Ops Platform Agent ${AGENT_VERSION} installed. HostId=${options.hostId}; ApiBaseUrl=${apiBaseUrl}'
 `
@@ -2015,9 +2240,13 @@ async function installWindowsAgent(input: RemoteConnectionInput, options: AgentI
     if ($configText -notlike '*${options.hostId}*') { throw 'Agent 配置主机 ID 校验失败' }
     if ($configText -notlike '*${options.agentToken.slice(0, 12)}*') { throw 'Agent 配置 Token 校验失败' }
     icacls $base /inheritance:r /grant 'Administrators:(OI)(CI)F' 'SYSTEM:(OI)(CI)F' | Out-Null
-    $taskAction = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '"'
-    & schtasks.exe /Create /TN OpsPlatformAgent /SC ONSTART /RU SYSTEM /TR $taskAction /F | Out-Null
+    $taskAction = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '" once'
+    $intervalMinutes = [Math]::Max(1, [Math]::Ceiling([double]${options.intervalSeconds} / 60))
+    cmd.exe /c "schtasks.exe /Delete /TN OpsPlatformAgent /F >nul 2>nul" | Out-Null
+    & schtasks.exe /Create /TN OpsPlatformAgent /SC MINUTE /MO $intervalMinutes /RU SYSTEM /RL HIGHEST /TR $taskAction /F | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "scheduled task create failed: $LASTEXITCODE" }
     & schtasks.exe /Run /TN OpsPlatformAgent | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "scheduled task start failed: $LASTEXITCODE" }
     Write-Output 'Ops Platform Agent ${AGENT_VERSION} installed via ops-platform-agent.ps1'
   `)
 }

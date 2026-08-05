@@ -46,8 +46,6 @@ const cgiMonitorRuleSchema = z.object({
   holidayMode: z.enum(['ignore', 'include', 'exclude']).optional(),
   holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(80).optional(),
   notification: z.object({
-    channels: z.array(z.enum(['站内告警', '企业微信', '钉钉'])).min(1).max(3),
-    webhookUrl: z.string().url().optional().or(z.literal('')),
     receivers: z.string().max(200).optional(),
   }).optional(),
   selfHealingBinding: selfHealingBindingSchema.optional(),

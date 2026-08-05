@@ -522,7 +522,7 @@ export async function setHostMaintenance(id: string, values: HostMaintenanceValu
     const until = values.until ? new Date(values.until) : null
     if (until && until <= new Date()) throw new Error('维护结束时间必须晚于当前时间')
     const updated = await prisma.host.update({ where: { id }, data: { maintenanceEnabled: true, maintenanceReason: reason, maintenanceUntil: until, maintenanceStartedAt: new Date(), maintenanceOperator: operator } })
-    await appendAudit(operator, '进入维护', updated.hostname, '成功', until ? `${reason}；截止 ${until.toLocaleString('zh-CN', { hour12: false })}` : `${reason}；手动结束`)
+    await appendAudit(operator, '进入维护', updated.hostname, '成功', until ? `${reason}；截止 ${shanghaiTime(until)}` : `${reason}；手动结束`)
     return getHost(id)
   }
   const updated = await prisma.host.update({ where: { id }, data: { maintenanceEnabled: false, maintenanceReason: null, maintenanceUntil: null, maintenanceStartedAt: null, maintenanceOperator: operator } })

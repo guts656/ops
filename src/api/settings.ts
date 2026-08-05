@@ -11,7 +11,7 @@ export async function saveOutboundNotificationSettings(values: OutboundNotificat
   return response.data.data
 }
 
-export async function testOutboundNotification(values: { channel: '企业微信' | '钉钉'; webhookUrl?: string; content?: string }): Promise<OutboundNotificationTestResult> {
+export async function testOutboundNotification(values: { channel: '企业微信' | '钉钉'; webhookUrl?: string; keyword?: string; content?: string }): Promise<OutboundNotificationTestResult> {
   const response = await http.post<{ data: OutboundNotificationTestResult }>('/settings/outbound-notifications/test', values)
   return response.data.data
 }

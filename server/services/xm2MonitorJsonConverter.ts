@@ -122,7 +122,7 @@ function parseHhmm(value: unknown) {
       ranges.push({ start, end })
     } else if (start > end) {
       ranges.push({ start, end: '23:59' })
-      if (end !== '00:00') ranges.push({ start: '00:00', end })
+      if (end !== '00:00') ranges.push({ start: '00:00', end, dayOffset: 1 })
     } else {
       warnings.push(`时间段 ${part} 起止相同，已跳过`)
     }
@@ -131,7 +131,7 @@ function parseHhmm(value: unknown) {
   const deduped: LogMonitorTimeRange[] = []
   const seen = new Set<string>()
   for (const range of ranges) {
-    const key = `${range.start}-${range.end}`
+    const key = `${range.start}-${range.end}-${range.dayOffset ?? 0}`
     if (seen.has(key)) continue
     seen.add(key)
     deduped.push(range)
@@ -214,7 +214,7 @@ export function convertXm2MonitorJson(input: unknown): Xm2ConvertPreviewResult {
         daysOfWeek: [],
         holidayMode: 'ignore',
         holidays: [],
-        notification: { channels: ['站内告警'] },
+        notification: {},
       },
     })
   })

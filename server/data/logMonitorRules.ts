@@ -3,11 +3,11 @@ import { prisma } from '../db/prisma'
 import { isHostInMaintenance } from './hosts'
 import { ingestAlert } from '../services/alertIngestionService'
 import { disableGeneratedMonitorSelfHealingBinding, normalizeAndValidateMonitorSelfHealingBinding, normalizeMonitorSelfHealingBinding, syncMonitorSelfHealingBinding } from '../services/monitorSelfHealingBinding'
-import { sendMonitorNotifications } from '../services/outboundNotificationService'
-import type { LogMonitorAlertRecord, LogMonitorNotification, LogMonitorRule, LogMonitorRuleInput, LogMonitorTimeRange } from '../types/log'
+import type { LogMonitorAlertRecord, LogMonitorMatchEvidence, LogMonitorNotification, LogMonitorRule, LogMonitorRuleInput, LogMonitorTimeRange } from '../types/log'
 import { getHostLogCollectionPaths } from './logCollectionRules'
 import { startOfShanghaiTodayUtc } from './logs'
 import { shanghaiTime } from '../utils/time'
+import { isLogMonitorScheduleActive } from '../services/logMonitorSchedule'
 
 type LogMonitorRuleRow = NonNullable<Awaited<ReturnType<typeof prisma.logMonitorRule.findFirst>>>
 type LogMonitorAlertRow = NonNullable<Awaited<ReturnType<typeof prisma.logMonitorAlert.findFirst>>>
@@ -27,6 +27,7 @@ export type AgentLocalLogMonitorResult = {
   matchedKeywords?: string[]
   matchedSources?: string[]
   matchedFiles?: string[]
+  matches?: Array<Pick<LogMonitorMatchEvidence, 'file' | 'lineNumber' | 'line'> & { matchedKeywords?: string[] }>
   readLines?: number
   windowStart?: Date
   windowEnd?: Date
@@ -43,9 +44,37 @@ function normalizeKeywords(values: string[] = []) {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).slice(0, 20)
 }
 
+function matchEvidenceValue(value: unknown): LogMonitorMatchEvidence[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return []
+    const evidence = item as Partial<LogMonitorMatchEvidence>
+    const file = typeof evidence.file === 'string' ? evidence.file.slice(0, 1024) : ''
+    const line = typeof evidence.line === 'string' ? evidence.line.slice(0, 2048) : ''
+    const lineNumber = Math.max(0, Math.floor(Number(evidence.lineNumber || 0)))
+    if (!file || lineNumber < 1) return []
+    return [{
+      hostId: typeof evidence.hostId === 'string' ? evidence.hostId : undefined,
+      file,
+      lineNumber,
+      line,
+      matchedKeywords: normalizeKeywords(Array.isArray(evidence.matchedKeywords) ? evidence.matchedKeywords : []),
+      sampledAt: typeof evidence.sampledAt === 'string' ? evidence.sampledAt : '',
+    }]
+  }).slice(0, 20)
+}
+
 function normalizeTimeRanges(ranges: LogMonitorTimeRange[] | undefined) {
   return (ranges ?? [])
-    .map((range) => ({ start: range.start?.trim(), end: range.end?.trim() }))
+    .map((range) => {
+      const daysOfWeek = Array.from(new Set((range.daysOfWeek ?? []).filter((day) => Number.isInteger(day) && day >= 1 && day <= 7))).sort()
+      return {
+        start: range.start?.trim(),
+        end: range.end?.trim(),
+        ...(daysOfWeek.length ? { daysOfWeek } : {}),
+        ...(range.dayOffset === 1 ? { dayOffset: 1 as const } : {}),
+      }
+    })
     .filter((range) => /^\d{2}:\d{2}$/.test(range.start) && /^\d{2}:\d{2}$/.test(range.end) && range.start < range.end)
     .slice(0, 8)
 }
@@ -56,10 +85,7 @@ function normalizeHolidays(values: string[] | undefined) {
 
 function notificationValue(value: unknown): LogMonitorNotification {
   const notification = value as Partial<LogMonitorNotification> | undefined
-  const channels = Array.isArray(notification?.channels) ? notification.channels.filter((channel) => ['站内告警', '企业微信', '钉钉'].includes(channel)) : ['站内告警']
   return {
-    channels: channels.length ? channels as LogMonitorNotification['channels'] : ['站内告警'],
-    webhookUrl: notification?.webhookUrl || undefined,
     receivers: notification?.receivers || undefined,
   }
 }
@@ -116,6 +142,7 @@ function toAlertRecord(record: LogMonitorAlertRow): LogMonitorAlertRecord {
     windowEnd: record.windowEnd.toISOString(),
     matchedKeywords: record.matchedKeywords,
     sampleLogIds: record.sampleLogIds,
+    matchEvidence: matchEvidenceValue(record.matchEvidence),
     notificationResults: record.notificationResults,
     createdAt: record.createdAt.toISOString(),
   }
@@ -229,13 +256,7 @@ function ruleAppliesToHost(rule: LogMonitorRule, host: { id: string; group: stri
 }
 
 function isRuleActive(rule: LogMonitorRule, date = new Date()) {
-  const current = localDateParts(date)
-  if (rule.daysOfWeek.length && !rule.daysOfWeek.includes(current.weekday)) return false
-  const holidayMatched = rule.holidays.includes(current.date)
-  if (rule.holidayMode === 'include' && !holidayMatched) return false
-  if (rule.holidayMode === 'exclude' && holidayMatched) return false
-  if (rule.timeRanges.length && !rule.timeRanges.some((range) => current.time >= range.start && current.time <= range.end)) return false
-  return true
+  return isLogMonitorScheduleActive(rule, date)
 }
 
 function inCooldown(rule: LogMonitorRule, date = new Date()) {
@@ -308,7 +329,6 @@ async function createNoDataAlertForRule(rule: LogMonitorRule, hostFilter: RuleHo
   const hostText = hosts.map((host) => `${host.ip}(${host.hostname})`).join('、') || targetText(rule)
   const source = rule.source || '未指定来源'
   const content = `日志监控「${rule.name}」在 ${rule.windowMinutes} 分钟评估窗口内没有从目标主机读取到任何日志数据。\n\n目标范围：${hostText}\n日志来源/路径：${source}\n窗口：${shanghaiTime(windowStart)} ~ ${shanghaiTime(windowEnd)}\n\n这通常表示 Agent 日志采集路径不存在、无新增日志、文件被占用无法读取、计划任务未执行，或日志上传接口异常。日志采集恢复前，关键字/ERROR 日志监控无法可靠触发。`
-  const notificationResults = await sendMonitorNotifications({ ruleNotification: rule.notification, content: `【严重】日志采集无数据：${rule.name}\n${content}` })
   const result = await ingestAlert({
     level: rule.alertLevel === '提示' ? '警告' : rule.alertLevel,
     time: nowText(windowEnd),
@@ -320,8 +340,7 @@ async function createNoDataAlertForRule(rule: LogMonitorRule, hostFilter: RuleHo
     relatedType: 'log_monitor_rule',
     relatedId: rule.id,
     fingerprint: `log-monitor-no-data:${rule.id}:${targetHostIds.sort().join(',')}`,
-    outboundNotification: { channels: ['站内告警'] },
-    metadata: { ruleId: rule.id, ruleName: rule.name, hostScope: rule.hostScope, hostIds: targetHostIds, hostGroup: rule.hostGroup, source, windowStart: windowStart.toISOString(), windowEnd: windowEnd.toISOString(), notificationResults },
+    metadata: { ruleId: rule.id, ruleName: rule.name, hostScope: rule.hostScope, hostIds: targetHostIds, hostGroup: rule.hostGroup, source, windowStart: windowStart.toISOString(), windowEnd: windowEnd.toISOString() },
   })
   await prisma.logMonitorRule.update({ where: { id: rule.id }, data: { lastTriggeredAt: windowEnd, lastEvaluatedAt: windowEnd, triggerCount: result.alert ? { increment: 1 } : undefined } })
   return result.alert
@@ -349,7 +368,6 @@ async function createAlertForRule(rule: LogMonitorRule, matchedCount: number, ma
   }).join('\n')
   const title = topServices.length === 1 ? `ERROR 日志：${topServices[0]}` : rule.name
   const content = `${conditionText}在 ${rule.windowMinutes} 分钟内出现 ${matchedCount} 次，达到阈值 ${rule.threshold} 次。\n\n定位信息：\n- 主机：${topHosts.join('、') || targetText(rule)}\n- 服务/容器：${topServices.join('、') || rule.service || '未识别'}\n- 日志来源：${topSources.join('、') || rule.source || '未识别'}\n\n样例日志：\n${sampleText || '暂无样例日志'}\n\n处理建议：请优先进入日志查询，按上述主机、服务/容器和日志来源筛选最近 ERROR 日志；若为重复问题，可为该服务配置专项日志监控或自愈规则。`
-  const notificationResults = await sendMonitorNotifications({ ruleNotification: rule.notification, content: `【${rule.alertLevel}】${title}\n${content}\n服务/范围：${service}\n时间：${nowText()}` })
   const result = await ingestAlert({
     level: rule.alertLevel,
     time: nowText(),
@@ -360,7 +378,6 @@ async function createAlertForRule(rule: LogMonitorRule, matchedCount: number, ma
     source: '日志监控',
     relatedType: 'log_monitor_rule',
     relatedId: rule.id,
-    outboundNotification: { channels: ['站内告警'] },
     metadata: {
       ruleId: rule.id,
       ruleName: rule.name,
@@ -390,6 +407,7 @@ async function createAlertForRule(rule: LogMonitorRule, matchedCount: number, ma
       windowEnd: windowEnd.toISOString(),
     },
   })
+  const notificationResults = result.notificationResults ?? []
 
   await prisma.$transaction([
     ...(result.alert ? [prisma.logMonitorAlert.create({ data: { ruleId: rule.id, alertId: result.alert.id, matchedCount, windowStart, windowEnd, matchedKeywords, sampleLogIds, notificationResults } })] : []),
@@ -400,6 +418,7 @@ async function createAlertForRule(rule: LogMonitorRule, matchedCount: number, ma
 async function createLocalMonitorAlertForRule(rule: LogMonitorRule, host: { id: string; ip: string; hostname: string }, result: AgentLocalLogMonitorResult, windowStart: Date, windowEnd: Date) {
   const matchedKeywords = Array.from(new Set((result.matchedKeywords ?? []).filter(Boolean))).slice(0, 20)
   const matchedSources = Array.from(new Set([...(result.matchedSources ?? []), ...(result.matchedFiles ?? [])].filter(Boolean))).slice(0, 10)
+  const matchEvidence = matchEvidenceValue((result.matches ?? []).map((match) => ({ ...match, hostId: host.id, sampledAt: windowEnd.toISOString() })))
   const service = rule.service || host.hostname || host.ip || targetText(rule)
   const sourceSummary = matchedSources.length ? matchedSources.join(', ') : rule.source || 'local files'
   const keywordSummary = matchedKeywords.length ? matchedKeywords.join(', ') : (rule.keywords.length ? rule.keywords.join(', ') : rule.level || 'matched condition')
@@ -413,9 +432,10 @@ async function createLocalMonitorAlertForRule(rule: LogMonitorRule, host: { id: 
     `Window: ${shanghaiTime(windowStart)} ~ ${shanghaiTime(windowEnd)}`,
     `Source: ${sourceSummary}`,
     '',
-    'Raw log content is intentionally not uploaded. Please inspect the source file on the Windows host when details are needed.',
+    matchEvidence.length
+      ? `Saved ${matchEvidence.length} matched line sample(s). Open the log monitor archive to inspect file and line details.`
+      : 'No matched line sample was reported. Please inspect the source file on the Windows host when details are needed.',
   ].join('\n')
-  const notificationResults = await sendMonitorNotifications({ ruleNotification: rule.notification, content: `[${rule.alertLevel}] ${rule.name}\n${content}` })
   const alertResult = await ingestAlert({
     level: rule.alertLevel,
     time: shanghaiTime(windowEnd),
@@ -427,7 +447,6 @@ async function createLocalMonitorAlertForRule(rule: LogMonitorRule, host: { id: 
     relatedType: 'log_monitor_rule',
     relatedId: rule.id,
     fingerprint: `windows-local-log-monitor:${rule.id}:${host.id}`,
-    outboundNotification: { channels: ['绔欏唴鍛婅'] },
     metadata: {
       ruleId: rule.id,
       ruleName: rule.name,
@@ -438,18 +457,20 @@ async function createLocalMonitorAlertForRule(rule: LogMonitorRule, host: { id: 
       matchedCount: result.matchedCount,
       matchedKeywords,
       matchedSources,
+      matchEvidence: matchEvidence.slice(0, 3),
       readLines: result.readLines ?? 0,
       localOnly: true,
       rawLogUploaded: false,
+      matchedEvidenceOnly: matchEvidence.length > 0,
       windowStart: windowStart.toISOString(),
       windowEnd: windowEnd.toISOString(),
-      notificationResults,
     },
   })
+  const notificationResults = alertResult.notificationResults ?? []
 
   await prisma.$transaction([
     prisma.logMonitorRule.update({ where: { id: rule.id }, data: { lastTriggeredAt: windowEnd, lastEvaluatedAt: windowEnd, triggerCount: { increment: 1 } } }),
-    ...(alertResult.alert ? [prisma.logMonitorAlert.create({ data: { ruleId: rule.id, alertId: alertResult.alert.id, matchedCount: result.matchedCount, windowStart, windowEnd, matchedKeywords, sampleLogIds: [], notificationResults } })] : []),
+    ...(alertResult.alert ? [prisma.logMonitorAlert.create({ data: { ruleId: rule.id, alertId: alertResult.alert.id, matchedCount: result.matchedCount, windowStart, windowEnd, matchedKeywords, sampleLogIds: [], matchEvidence: matchEvidence as unknown as Prisma.InputJsonValue, notificationResults } })] : []),
   ])
   return alertResult.alert
 }
@@ -594,7 +615,7 @@ export async function ensureDefaultErrorLogMonitorRule() {
       timeRanges: [],
       holidayMode: 'ignore',
       holidays: [],
-      notification: notificationValue({ channels: ['站内告警'], receivers: '日志监控' }) as unknown as Prisma.InputJsonValue,
+      notification: notificationValue({ receivers: '日志监控' }) as unknown as Prisma.InputJsonValue,
     },
   })
   return toRule(rule)

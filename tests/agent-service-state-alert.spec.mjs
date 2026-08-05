@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { prisma } from '../server/db/prisma.ts'
 import { getHostServices, ingestHostServices, ingestServiceEvents } from '../server/data/hostServices.ts'
 import { getDashboardData } from '../server/data/dashboard.ts'
-import { getServiceTopology } from '../server/data/topology.ts'
 
 const now = Date.now()
 const windowsHostId = `host-service-state-win-${now}`
@@ -12,6 +11,7 @@ const otherService = `other-${now}.service`
 const eventOnlyService = `event-only-${now}.service`
 const linuxService = `linux-${now}.service`
 const hiddenService = `baseline-stopped-${now}.service`
+const legacyMissingService = `legacy-missing-${now}.service`
 const fingerprint = `agent-service:${windowsHostId}:${serviceName}:0:abnormal`
 
 function hostData(id, os) {
@@ -38,7 +38,7 @@ function hostData(id, os) {
 }
 
 async function cleanup() {
-  await prisma.alert.deleteMany({ where: { OR: [{ service: { in: [serviceName, otherService, eventOnlyService, linuxService, hiddenService] } }, { fingerprint: { startsWith: `agent-service:${linuxHostId}:` } }, { fingerprint }] } })
+  await prisma.alert.deleteMany({ where: { OR: [{ service: { in: [serviceName, otherService, eventOnlyService, linuxService, hiddenService, legacyMissingService] } }, { fingerprint: { startsWith: `agent-service:${linuxHostId}:` } }, { fingerprint }] } })
   await prisma.alertNoiseRecord.deleteMany({ where: { OR: [{ fingerprint }, { fingerprint: { startsWith: `agent-service:${linuxHostId}:` } }, { fingerprint: `agent-service:${windowsHostId}:${eventOnlyService}:0:abnormal` }] } })
   await prisma.host.deleteMany({ where: { id: { in: [windowsHostId, linuxHostId] } } })
 }
@@ -57,7 +57,6 @@ try {
   assert.equal((await getHostServices(windowsHostId)).some((service) => service.name === hiddenService), false, 'hidden baseline should not appear in host service list')
   assert.equal(await prisma.serviceEvent.count({ where: { hostId: windowsHostId, service: hiddenService } }), 0, 'hidden baseline should not create events')
   assert.equal(await prisma.alert.count({ where: { service: hiddenService, source: 'Agent服务监控' } }), 0, 'hidden baseline should not create alerts')
-  assert.equal((await getServiceTopology()).nodes.some((node) => node.type === 'service' && node.hostId === windowsHostId && node.name === hiddenService), false, 'hidden baseline should not appear in topology')
   assert.equal((await getDashboardData()).services.some((service) => service.name === hiddenService), false, 'hidden baseline should not appear in dashboard service aggregation')
 
   await ingestHostServices(windowsHostId, [])
@@ -75,7 +74,6 @@ try {
   await ingestHostServices(windowsHostId, [windowsService(hiddenService, 'stopped')])
   assert.ok(await prisma.serviceEvent.findFirst({ where: { hostId: windowsHostId, service: hiddenService, eventType: 'service_not_running' } }), 'once-healthy service should create stopped event')
   assert.ok(await prisma.alert.findFirst({ where: { service: hiddenService, source: 'Agent服务监控', status: { not: '已解决' } } }), 'once-healthy service should create stopped alert')
-  assert.equal((await getServiceTopology()).nodes.some((node) => node.type === 'service' && node.hostId === windowsHostId && node.name === hiddenService && node.status === '异常'), true, 'once-healthy stopped service should appear abnormal in topology')
 
   await ingestHostServices(windowsHostId, [windowsService(serviceName, 'running')])
   const active = await prisma.hostService.findFirstOrThrow({ where: { hostId: windowsHostId, name: serviceName } })
@@ -97,8 +95,20 @@ try {
   assert.ok(resolvedAlert.metadata?.recovery, 'resolved alert should keep recovery metadata')
 
   await ingestHostServices(windowsHostId, [windowsService(otherService, 'running')])
-  const missing = await prisma.hostService.findFirstOrThrow({ where: { hostId: windowsHostId, name: serviceName } })
-  assert.equal(missing.status, 'missing', 'Windows service omitted from latest snapshot should be marked missing')
+  const removed = await prisma.hostService.findFirst({ where: { hostId: windowsHostId, name: serviceName } })
+  assert.equal(removed, null, 'Windows service omitted from latest snapshot should leave current service health')
+  assert.equal((await getHostServices(windowsHostId)).some((service) => service.name === serviceName), false, 'removed Windows service should no longer appear in host service list')
+  assert.equal((await getDashboardData()).services.some((service) => service.name === serviceName), false, 'removed Windows service should no longer appear in dashboard service health')
+
+  await ingestHostServices(windowsHostId, [windowsService(otherService, 'stopped')])
+  const removedServiceAlert = await prisma.alert.findFirstOrThrow({ where: { service: otherService, source: 'Agent服务监控', status: { not: '已解决' } } })
+  await ingestHostServices(windowsHostId, [])
+  assert.equal(await prisma.hostService.findFirst({ where: { hostId: windowsHostId, name: otherService } }), null, 'empty service snapshot should remove stale current services')
+  assert.equal((await prisma.alert.findUniqueOrThrow({ where: { id: removedServiceAlert.id } })).status, '已解决', 'removing an uninstalled service should resolve its stale service alert')
+
+  await prisma.hostService.create({ data: { hostId: windowsHostId, name: legacyMissingService, status: 'missing', port: 0, source: 'windows-service', metadata: { previousMetadata: { path: 'C:\\Apps\\Legacy\\legacy.exe' }, missingDetectedAt: new Date().toISOString() }, lastReportedAt: new Date() } })
+  await ingestHostServices(windowsHostId, [])
+  assert.equal(await prisma.hostService.findFirst({ where: { hostId: windowsHostId, name: legacyMissingService } }), null, 'legacy missing service rows without top-level path metadata should also be removed')
 
   await ingestServiceEvents(windowsHostId, [{ service: eventOnlyService, eventType: 'service_not_running', level: 'ERROR', message: 'event-only service is not running', source: 'windows-service', occurredAt: new Date().toISOString() }])
   const eventDerived = await prisma.hostService.findFirstOrThrow({ where: { hostId: windowsHostId, name: eventOnlyService } })

@@ -1,4 +1,4 @@
-import { BellOutlined, ClockCircleOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import { BellOutlined, CalendarOutlined, ClockCircleOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined, FileSearchOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { Alert, AutoComplete, Button, Card, Checkbox, Col, Descriptions, Drawer, Flex, Form, Input, InputNumber, Modal, Popconfirm, Radio, Row, Select, Space, Statistic, Switch, Table, Tabs, Tag, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useDeferredValue, useEffect, useMemo, useState } from 'react'
@@ -6,13 +6,15 @@ import { createLogMonitorRule, deleteLogMonitorRule, evaluateLogMonitorRule, get
 import { queryHosts } from '../api/hosts'
 import CgiMonitorPanel from '../components/log-monitoring/CgiMonitorPanel'
 import HostResourceMonitorPanel from '../components/log-monitoring/HostResourceMonitorPanel'
+import IpushMonitorPanel from '../components/log-monitoring/IpushMonitorPanel'
 import SelfHealingBindingCard from '../components/log-monitoring/SelfHealingBindingCard'
 import { getErrorMessage } from '../api/http'
 import PermissionGate from '../components/auth/PermissionGate'
 import { PERMISSIONS } from '../config/permissions'
 import type { Host } from '../types/host'
-import type { LogMonitorAlertRecord, LogMonitorChannel, LogMonitorRule, LogMonitorRuleInput, LogMonitorTimeRange } from '../types/log'
+import type { LogMonitorAlertRecord, LogMonitorRule, LogMonitorRuleInput, LogMonitorTimeRange } from '../types/log'
 import { formatShanghaiTime } from '../utils/time'
+import { CHINA_HOLIDAYS_2026, CHINA_HOLIDAYS_2026_SOURCE } from '../constants/chinaHolidays'
 
 const levelColor: Record<string, string> = { ERROR: 'red', WARN: 'gold', INFO: 'blue', DEBUG: 'default' }
 const alertLevelColor: Record<string, string> = { 紧急: 'red', 严重: 'volcano', 警告: 'gold', 提示: 'blue' }
@@ -37,8 +39,6 @@ interface RuleFormValues extends Omit<LogMonitorRuleInput, 'keywords' | 'holiday
   keywordsText: string
   holidaysText?: string
   notification?: {
-    channels?: LogMonitorChannel[]
-    webhookUrl?: string
     receivers?: string
   }
 }
@@ -56,13 +56,7 @@ function withoutNulls<T extends Record<string, unknown>>(value: T): T {
 }
 
 function toPayload(values: RuleFormValues): LogMonitorRuleInput {
-  const notification = values.notification?.channels?.length
-    ? {
-        channels: values.notification.channels,
-        webhookUrl: values.notification.webhookUrl,
-        receivers: values.notification.receivers,
-      }
-    : undefined
+  const notification = { receivers: values.notification?.receivers }
   const hostScope = values.hostScope ?? (values.hostId ? 'single' : 'all')
   const hostIds = Array.from(new Set((values.hostIds ?? []).filter(Boolean)))
   const hostTarget = hostScope === 'single'
@@ -107,7 +101,7 @@ function toFormValues(rule?: LogMonitorRule): Partial<RuleFormValues> {
       daysOfWeek: [1, 2, 3, 4, 5],
       timeRanges: [{ start: '00:00', end: '23:59' }],
       holidayMode: 'ignore',
-      notification: { channels: ['站内告警'] },
+      notification: { receivers: '' },
       selfHealingBinding: { enabled: false, actionType: '重启服务', targetServiceName: '', serviceName: '', autoExecute: false, executionMode: 'safe', retries: 0, cooldownMinutes: 30 },
       hostScope: 'all',
       hostIds: [],
@@ -127,7 +121,12 @@ function toFormValues(rule?: LogMonitorRule): Partial<RuleFormValues> {
 
 function scheduleText(rule: LogMonitorRule) {
   const days = rule.daysOfWeek.length ? rule.daysOfWeek.map((day) => dayOptions.find((item) => item.value === day)?.label).join('、') : '每天'
-  const ranges = rule.timeRanges.length ? rule.timeRanges.map((range) => `${range.start}-${range.end}`).join('、') : '全天'
+  const ranges = rule.timeRanges.length ? rule.timeRanges.map((range) => {
+    const rangeDays = range.daysOfWeek?.length
+      ? range.daysOfWeek.map((day) => dayOptions.find((item) => item.value === day)?.label).join('、')
+      : range.dayOffset === 1 ? '次日' : ''
+    return `${rangeDays ? `${rangeDays} ` : ''}${range.start}-${range.end}`
+  }).join('、') : '全天'
   const holiday = rule.holidayMode === 'include' ? '仅节假日' : rule.holidayMode === 'exclude' ? '排除节假日' : '不判断节假日'
   return `${days} · ${ranges} · ${holiday}`
 }
@@ -149,6 +148,7 @@ export default function LogMonitoring() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingRule, setEditingRule] = useState<LogMonitorRule>()
   const [selectedRule, setSelectedRule] = useState<LogMonitorRule>()
+  const [selectedAlert, setSelectedAlert] = useState<LogMonitorAlertRecord>()
   const [statusFilter, setStatusFilter] = useState<RuleStatusFilter>('all')
   const [ruleSearch, setRuleSearch] = useState('')
   const deferredRuleSearch = useDeferredValue(ruleSearch)
@@ -180,25 +180,39 @@ export default function LogMonitoring() {
   }), [alerts.length, rules])
 
 
-  const hostOptions = hosts.map((host) => ({ label: `${host.ip} · ${host.hostname}`, value: host.id }))
+  const formatHostLabel = (host: Host) => `${host.hostname || '未命名主机'} - ${host.ip}`
+  const hostLabelById = Object.fromEntries(hosts.map((host) => [host.id, formatHostLabel(host)]))
+  const editingHostIds = editingRule
+    ? Array.from(new Set([editingRule.hostId, ...editingRule.hostIds].filter(Boolean) as string[]))
+    : []
+  const hostOptions = [
+    ...hosts.map((host) => ({ label: formatHostLabel(host), value: host.id })),
+    ...editingHostIds.filter((hostId) => !hostLabelById[hostId]).map((hostId) => ({ label: '主机已删除（请重新选择）', value: hostId, disabled: true })),
+  ]
   const groupOptions = Array.from(new Set(hosts.map((host) => host.group).filter(Boolean))).map((group) => ({ label: group, value: group }))
-  const hostLabelById = Object.fromEntries(hosts.map((host) => [host.id, `${host.ip} · ${host.hostname}`]))
   const serviceOptions = services.map((service) => ({ label: service.startsWith('container:') ? `容器：${service.replace('container:', '')}` : service, value: service }))
+  const deletedHostLabel = '主机已删除（请重新选择）'
 
   const formatRuleHostScope = (rule: LogMonitorRule, detail = false) => {
     const scope = rule.hostScope ?? (rule.hostId ? 'single' : 'all')
     if (scope === 'single') {
       const hostId = rule.hostId || rule.hostIds[0]
-      return hostId ? hostLabelById[hostId] || hostId : '未选择主机'
+      return hostId ? hostLabelById[hostId] || deletedHostLabel : '未选择主机'
     }
     if (scope === 'multiple') {
       const hostIds = rule.hostIds || []
-      if (detail) return hostIds.length ? hostIds.map((hostId) => hostLabelById[hostId] || hostId).join('、') : '未选择主机'
+      if (detail) return hostIds.length ? hostIds.map((hostId) => hostLabelById[hostId] || deletedHostLabel).join('、') : '未选择主机'
       return hostIds.length ? `多主机 ${hostIds.length} 台` : '未选择主机'
     }
     if (scope === 'group') return rule.hostGroup ? `主机组：${rule.hostGroup}` : '未选择主机组'
     return '全部主机'
   }
+
+  const orphanedRuleCount = rules.filter((rule) => {
+    const scope = rule.hostScope ?? (rule.hostId ? 'single' : 'all')
+    const targetHostIds = scope === 'single' ? [rule.hostId || rule.hostIds[0]] : scope === 'multiple' ? rule.hostIds : []
+    return targetHostIds.some((hostId) => hostId && !hostLabelById[hostId])
+  }).length
 
   const filteredRules = useMemo(() => {
     const keyword = deferredRuleSearch.trim().toLowerCase()
@@ -220,7 +234,6 @@ export default function LogMonitoring() {
         ...rule.hostIds,
         ...rule.hostIds.map((hostId) => hostLabelById[hostId]),
         ...rule.keywords,
-        ...rule.notification.channels,
         rule.notification.receivers,
         rule.selfHealingBinding?.targetServiceName,
         rule.selfHealingBinding?.serviceName,
@@ -315,7 +328,6 @@ export default function LogMonitoring() {
     { title: '匹配条件', dataIndex: 'keywords', width: 260, render: (_, rule) => renderMatchConditions(rule) },
     { title: '阈值', width: 130, render: (_, rule) => <Typography.Text>{rule.windowMinutes} 分钟 ≥ <Typography.Text strong>{rule.threshold}</Typography.Text> 次</Typography.Text> },
     { title: '周期', width: 260, render: (_, rule) => <Typography.Text type="secondary">{scheduleText(rule)}</Typography.Text> },
-    { title: '通知', width: 170, render: (_, rule) => <Space wrap>{rule.notification.channels.map((channel) => <Tag key={channel} color={channel === '站内告警' ? 'blue' : 'purple'}>{channel}</Tag>)}</Space> },
     { title: '触发', width: 120, render: (_, rule) => <Space direction="vertical" size={0}><Typography.Text strong>{rule.triggerCount} 次</Typography.Text><Typography.Text type="secondary">{rule.lastTriggeredAt ? formatShanghaiTime(rule.lastTriggeredAt) : '未触发'}</Typography.Text></Space> },
     {
       title: '操作',
@@ -371,6 +383,15 @@ export default function LogMonitoring() {
               <Space direction="vertical" size="large" style={{ width: '100%' }}>
                 <Alert showIcon type="info" message="触发逻辑" description="调度器默认每 30 秒评估一次启用规则。规则命中时会检查冷却期，避免同一条件短时间重复刷屏；系统内置“所有 ERROR 日志告警”规则，会将 ERROR 级别日志写入报警中心。" />
                 <Card title="监控规则" extra={<Space><Radio.Group size="small" optionType="button" buttonStyle="solid" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} options={[{ label: `全部 ${stats.total}`, value: 'all' }, { label: `启用 ${stats.enabled}`, value: 'enabled' }, { label: `停用 ${stats.disabled}`, value: 'disabled' }]} /><Button icon={<ReloadOutlined />} onClick={load}>刷新</Button></Space>}>
+                  {orphanedRuleCount > 0 && (
+                    <Alert
+                      showIcon
+                      type="warning"
+                      style={{ marginBottom: 16 }}
+                      message={`${orphanedRuleCount} 条规则绑定的主机已删除`}
+                      description="这些规则无法匹配当前主机，请编辑规则并重新选择主机。"
+                    />
+                  )}
                   <Flex justify="space-between" align="center" gap="middle" wrap style={{ marginBottom: 16 }}>
                     <Input.Search
                       allowClear
@@ -395,14 +416,17 @@ export default function LogMonitoring() {
                       { title: '告警ID', dataIndex: 'alertId', render: (value) => <Typography.Text code>{value}</Typography.Text> },
                       { title: '命中次数', dataIndex: 'matchedCount', width: 120, render: (value) => <Typography.Text strong>{value}</Typography.Text> },
                       { title: '匹配关键字', dataIndex: 'matchedKeywords', render: (values: string[]) => <Space wrap>{values.length ? values.map((value) => <Tag key={value}>{value}</Tag>) : <Typography.Text type="secondary">按级别/条件匹配</Typography.Text>}</Space> },
-                      { title: '通知结果', dataIndex: 'notificationResults', render: (values: string[]) => values.length ? values.join('；') : '站内告警' },
+                      { title: '通知结果', dataIndex: 'notificationResults', render: (values: string[]) => values.length ? values.join('；') : '无外部通知' },
+                      { title: '操作', width: 130, fixed: 'right', render: (_, alert) => <Button type="link" icon={<FileSearchOutlined />} onClick={() => setSelectedAlert(alert)}>监视档案</Button> },
                     ]}
+                    scroll={{ x: 1050 }}
                   />
                 </Card>
               </Space>
             ),
           },
           { key: 'cgi', label: 'CGI/URL 监控', children: <CgiMonitorPanel hosts={hosts} /> },
+          { key: 'ipush', label: 'iPush监控', children: <IpushMonitorPanel hosts={hosts} /> },
           { key: 'host-resource', label: '主机资源监控', children: <HostResourceMonitorPanel hosts={hosts} /> },
         ]}
       />
@@ -474,10 +498,13 @@ export default function LogMonitoring() {
               {(fields, { add, remove }) => (
                 <Space direction="vertical" style={{ width: '100%' }}>
                   {fields.map((field) => (
-                    <Flex key={field.key} gap="small" align="center">
+                    <Flex key={field.key} gap="small" align="center" wrap>
                       <Form.Item {...field} name={[field.name, 'start']} style={{ flex: 1, marginBottom: 0 }}><Input placeholder="开始 HH:mm" /></Form.Item>
                       <span>至</span>
                       <Form.Item {...field} name={[field.name, 'end']} style={{ flex: 1, marginBottom: 0 }}><Input placeholder="结束 HH:mm" /></Form.Item>
+                      <Form.Item {...field} name={[field.name, 'daysOfWeek']} style={{ minWidth: 260, flex: 2, marginBottom: 0 }}>
+                        <Select mode="multiple" allowClear options={dayOptions} placeholder="沿用生效周期" maxTagCount="responsive" />
+                      </Form.Item>
                       <Button danger onClick={() => remove(field.name)}>删除</Button>
                     </Flex>
                   ))}
@@ -488,7 +515,7 @@ export default function LogMonitoring() {
           </Card>
           <Row gutter={16}>
             <Col span={10}><Form.Item name="holidayMode" label="节假日策略"><Select options={[{ label: '不判断节假日', value: 'ignore' }, { label: '仅节假日生效', value: 'include' }, { label: '排除节假日', value: 'exclude' }]} /></Form.Item></Col>
-            <Col span={14}><Form.Item name="holidaysText" label="节假日日期"><Input.TextArea rows={3} placeholder={'2026-10-01\n2026-10-02'} /></Form.Item></Col>
+            <Col span={14}><Form.Item name="holidaysText" label="节假日日期" extra={<Space size="small"><Button type="link" size="small" icon={<CalendarOutlined />} onClick={() => { form.setFieldValue('holidaysText', CHINA_HOLIDAYS_2026.join('\n')); message.success('已填充 2026 年官方放假日期') }}>填充 2026 放假日期</Button><Typography.Link href={CHINA_HOLIDAYS_2026_SOURCE} target="_blank">官方来源</Typography.Link></Space>}><Input.TextArea rows={3} placeholder={'2026-10-01\n2026-10-02'} /></Form.Item></Col>
           </Row>
           <SelfHealingBindingCard
             form={form}
@@ -496,11 +523,7 @@ export default function LogMonitoring() {
             description="开启后系统自动维护自愈规则和告警自动处理映射，日志关键字/等级命中告警会触发对应动作。"
             safeDescription="日志告警后会自动写入自愈执行历史和计划动作，不会执行远程命令。"
           />
-          <Card size="small" title="通知配置">
-            <Form.Item name={['notification', 'channels']} label="通知渠道" rules={[{ required: true, message: '请选择通知渠道' }]}><Checkbox.Group options={['站内告警', '企业微信', '钉钉']} /></Form.Item>
-            <Form.Item name={['notification', 'webhookUrl']} label="企业微信/钉钉 Webhook" extra="可选覆盖；不填则使用设置页里的全局告警通知配置。"><Input placeholder="可选：填写后优先使用该规则自己的机器人 Webhook" /></Form.Item>
-            <Form.Item name={['notification', 'receivers']} label="负责人/接收人"><Input placeholder="例如：支付 SRE 值班群、张三" /></Form.Item>
-          </Card>
+          <Form.Item name={['notification', 'receivers']} label="告警负责人"><Input placeholder="例如：支付 SRE 值班组、张三" /></Form.Item>
         </Form>
       </Drawer>
 
@@ -513,12 +536,12 @@ export default function LogMonitoring() {
             <Descriptions.Item label="范围">{selectedRule.service || '全部服务'} / {selectedRule.level ? <Tag color={levelColor[selectedRule.level]}>{selectedRule.level}</Tag> : '全部级别'}</Descriptions.Item>
             <Descriptions.Item label="主机范围">{formatRuleHostScope(selectedRule, true)}</Descriptions.Item>
             <Descriptions.Item label="周期">{scheduleText(selectedRule)}</Descriptions.Item>
-            <Descriptions.Item label="通知">{selectedRule.notification.channels.join('、')}；{selectedRule.notification.receivers || '未指定接收人'}</Descriptions.Item>
+            <Descriptions.Item label="告警负责人">{selectedRule.notification.receivers || '未指定'}</Descriptions.Item>
             <Descriptions.Item label="异常自愈">
               {selectedRule.selfHealingBinding?.enabled ? (
                 <Space direction="vertical" size={4}>
                   <Space>{selfHealingTag(selectedRule)}<Typography.Text>{selectedRule.selfHealingBinding.actionType} → {selectedRule.selfHealingBinding.targetServiceName || selectedRule.selfHealingBinding.serviceName}</Typography.Text></Space>
-                  <Typography.Text type="secondary">目标主机：{selectedRule.selfHealingBinding.targetHostId || '未指定'}；冷却 {selectedRule.selfHealingBinding.cooldownMinutes} 分钟，重试 {selectedRule.selfHealingBinding.retries} 次</Typography.Text>
+                  <Typography.Text type="secondary">目标主机：{selectedRule.selfHealingBinding.targetHostId ? hostLabelById[selectedRule.selfHealingBinding.targetHostId] || deletedHostLabel : '未指定'}；冷却 {selectedRule.selfHealingBinding.cooldownMinutes} 分钟，重试 {selectedRule.selfHealingBinding.retries} 次</Typography.Text>
                   {selectedRule.generatedSelfHealingRuleId && <Typography.Text type="secondary">自愈规则：{selectedRule.generatedSelfHealingRuleId}</Typography.Text>}
                   {selectedRule.generatedAlertHandlingRuleId && <Typography.Text type="secondary">告警映射：{selectedRule.generatedAlertHandlingRuleId}</Typography.Text>}
                 </Space>
@@ -528,6 +551,44 @@ export default function LogMonitoring() {
           </Descriptions>
         )}
       </Modal>
+
+      <Drawer
+        title={<Space><FileSearchOutlined />监视档案</Space>}
+        width="min(920px, 96vw)"
+        open={Boolean(selectedAlert)}
+        onClose={() => setSelectedAlert(undefined)}
+        destroyOnHidden
+      >
+        {selectedAlert && (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Descriptions bordered size="small" column={{ xs: 1, sm: 2 }}>
+              <Descriptions.Item label="规则">{rules.find((rule) => rule.id === selectedAlert.ruleId)?.name || '已删除的规则'}</Descriptions.Item>
+              <Descriptions.Item label="触发时间">{formatShanghaiTime(selectedAlert.createdAt)}</Descriptions.Item>
+              <Descriptions.Item label="监控窗口">{formatShanghaiTime(selectedAlert.windowStart)} 至 {formatShanghaiTime(selectedAlert.windowEnd)}</Descriptions.Item>
+              <Descriptions.Item label="命中次数">{selectedAlert.matchedCount}</Descriptions.Item>
+            </Descriptions>
+            {selectedAlert.matchEvidence.length ? (
+              <Table
+                rowKey={(_, index) => `${selectedAlert.id}-${index}`}
+                size="small"
+                pagination={false}
+                dataSource={selectedAlert.matchEvidence}
+                scroll={{ x: 820 }}
+                columns={[
+                  { title: '主机', width: 190, render: (_, evidence) => evidence.hostId ? hostLabelById[evidence.hostId] || '主机已删除' : '未记录' },
+                  { title: '文件', dataIndex: 'file', width: 260, render: (value) => <Typography.Text code style={{ wordBreak: 'break-all' }}>{value}</Typography.Text> },
+                  { title: '行号', dataIndex: 'lineNumber', width: 85, render: (value) => <Typography.Text strong>{value}</Typography.Text> },
+                  { title: '关键字', dataIndex: 'matchedKeywords', width: 160, render: (values: string[]) => values.length ? <Space wrap>{values.map((value) => <Tag key={value}>{value}</Tag>)}</Space> : <Typography.Text type="secondary">按级别/条件匹配</Typography.Text> },
+                  { title: '命中日志行', dataIndex: 'line', render: (value) => <Typography.Text style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{value || '空行'}</Typography.Text> },
+                ]}
+              />
+            ) : (
+              <Alert showIcon type="info" message="这条记录没有命中行档案" description="旧告警或旧版 Agent 未保存命中行，无法回溯原始内容。Windows Agent 升级到 v2.10.19 后，新触发的日志告警会保存最多 20 条命中行。" />
+            )}
+            {selectedAlert.matchEvidence.length > 0 && <Typography.Text type="secondary">仅保存本次告警的命中行证据，不上传完整日志文件；每条规则最多保存 20 行，单行最多 2KB。</Typography.Text>}
+          </Space>
+        )}
+      </Drawer>
     </Space>
   )
 }

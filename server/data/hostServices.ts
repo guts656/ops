@@ -20,12 +20,15 @@ const windowsSystemServiceNames = new Set([
   'appmgmt',
   'bits',
   'brokerinfrastructure',
+  'clipsvc',
   'cryptsvc',
   'defragsvc',
   'dhcp',
   'dnscache',
   'eventlog',
   'eventsystem',
+  'gupdate',
+  'gupdatem',
   'gpsvc',
   'iphlpsvc',
   'lanmanserver',
@@ -41,6 +44,7 @@ const windowsSystemServiceNames = new Set([
   'rpcss',
   'samss',
   'schedule',
+  'scdeviceenum',
   'seclogon',
   'sens',
   'spooler',
@@ -54,9 +58,10 @@ const windowsSystemServiceNames = new Set([
   'wercsvc',
   'winmgmt',
   'winrm',
+  'wisvc',
   'wuauserv',
 ])
-const windowsSystemServicePrefixes = ['clr_', 'clr_optimization_', 'comsysapp', 'diagnostic', 'microsoft', 'msiserver', 'net.', 'perceptionsimulation', 'remoteaccess', 'sgrm', 'shell', 'swprv', 'tiledatamodelsvc', 'vmic', 'wdi', 'wer', 'winhttp', 'wlidsvc', 'wpn', 'xbl']
+const windowsSystemServicePrefixes = ['clr_', 'clr_optimization_', 'comsysapp', 'diagnostic', 'google', 'microsoft', 'msiserver', 'net.', 'perceptionsimulation', 'remoteaccess', 'sgrm', 'shell', 'swprv', 'tiledatamodelsvc', 'vmic', 'wdi', 'wer', 'winhttp', 'wlidsvc', 'wpn', 'xbl']
 
 function displayTime(date: Date) {
   return shanghaiTime(date)
@@ -223,6 +228,44 @@ export async function cleanupLinuxServiceMonitoring(hostId?: string) {
   return { hosts: hostIds.length, services: deletedServices.count, events: deletedEvents.count, alertsResolved: staleAlerts.length }
 }
 
+export async function cleanupIgnoredWindowsServiceMonitoring() {
+  const [serviceCandidates, eventCandidates] = await Promise.all([
+    prisma.hostService.findMany({ where: { source: 'windows-service' } }),
+    prisma.serviceEvent.findMany({ where: { source: 'windows-service' } }),
+  ])
+  const ignoredServices = serviceCandidates.filter((service) => isWindowsSystemService(service))
+  const ignoredEvents = eventCandidates.filter((event) => isWindowsSystemServiceName(event.service))
+  if (!ignoredServices.length && !ignoredEvents.length) return { services: 0, events: 0, alertsResolved: 0 }
+
+  let alertsResolved = 0
+  const ignoredKeys = new Map<string, { hostId: string; service: string; port: number }>()
+  for (const service of ignoredServices) {
+    ignoredKeys.set(`${service.hostId}:${service.name.toLowerCase()}:${service.port ?? 0}`, { hostId: service.hostId, service: service.name, port: service.port ?? 0 })
+  }
+  for (const event of ignoredEvents) {
+    ignoredKeys.set(`${event.hostId}:${event.service.toLowerCase()}:0`, { hostId: event.hostId, service: event.service, port: 0 })
+  }
+  for (const ignored of ignoredKeys.values()) {
+    const activeAlerts = await prisma.alert.findMany({
+      where: {
+        fingerprint: serviceAlertFingerprint(ignored.hostId, ignored.service, ignored.port),
+        status: { not: '已解决' },
+      },
+      select: { id: true },
+    })
+    for (const alert of activeAlerts) {
+      await resolveAlert(alert.id, 'Agent服务监控')
+      alertsResolved += 1
+    }
+  }
+
+  const [deletedServices, deletedEvents] = await prisma.$transaction([
+    prisma.hostService.deleteMany({ where: { id: { in: ignoredServices.map((service) => service.id) } } }),
+    prisma.serviceEvent.deleteMany({ where: { id: { in: ignoredEvents.map((event) => event.id) } } }),
+  ])
+  return { services: deletedServices.count, events: deletedEvents.count, alertsResolved }
+}
+
 async function createServiceAlert(host: HostSummary, service: HostServiceRow, event: ServiceEventRow, previousStatus: string | undefined, currentStatus: string) {
   if (!isAbnormalStatus(currentStatus)) return
   const level = alertLevelForStatus(currentStatus)
@@ -266,6 +309,17 @@ async function resolveServiceAlert(host: HostSummary, service: HostServiceRow, e
     },
   })
   if (alert.status !== '已解决') await resolveAlert(alert.id, 'Agent服务监控')
+}
+
+async function resolveRemovedServiceAlerts(hostId: string, service: HostServiceRow) {
+  const alerts = await prisma.alert.findMany({
+    where: {
+      fingerprint: serviceAlertFingerprint(hostId, service.name, service.port),
+      status: { not: '已解决' },
+    },
+    select: { id: true },
+  })
+  for (const alert of alerts) await resolveAlert(alert.id, 'Agent服务监控')
 }
 
 async function createTransitionEvent(host: HostSummary, service: HostServiceRow, previousStatus: string | undefined, currentStatus: string, options: { source?: string; message?: string; payload?: Record<string, unknown> } = {}) {
@@ -364,10 +418,9 @@ export async function ingestHostServices(hostId: string, services: AgentServiceI
 
   for (const service of existing) {
     const key = serviceKey(service)
-    const status = normalizedStatus(service.status)
-    if (reportedKeys.has(key) || isHiddenStoppedBaseline(service) || isIgnoredService(service) || isWindowsSystemService(service) || status === 'missing' || status === 'removed') continue
-    const saved = await prisma.hostService.update({ where: { id: service.id }, data: { status: 'missing', pid: null, lastReportedAt: now, metadata: { previousMetadata: service.metadata, missingDetectedAt: now.toISOString() } as Prisma.InputJsonValue } })
-    await createTransitionEvent(host, saved, service.status, 'missing', { source: service.source, message: `${service.name} was not included in the latest agent service report`, payload: { reason: 'absent_from_latest_report' } })
+    if (reportedKeys.has(key) || isHiddenStoppedBaseline(service) || isIgnoredService(service)) continue
+    await resolveRemovedServiceAlerts(hostId, service)
+    await prisma.hostService.delete({ where: { id: service.id } })
   }
 
   return filteredServices.length
@@ -414,8 +467,10 @@ export async function ingestServiceEvents(hostId: string, events: AgentServiceEv
     await cleanupLinuxServiceMonitoring(hostId)
     return 0
   }
+  let acceptedCount = 0
   for (const event of events) {
     if (event.source === 'windows-service' && isWindowsSystemServiceName(event.service)) continue
+    acceptedCount += 1
     const occurredAt = event.occurredAt ? new Date(event.occurredAt) : new Date()
     const savedEvent = await prisma.serviceEvent.create({
       data: {
@@ -451,5 +506,5 @@ export async function ingestServiceEvents(hostId: string, events: AgentServiceEv
     const eventDerivedService = await createEventDerivedService(hostId, event, currentStatus, occurredAt)
     await createServiceAlert(host, eventDerivedService, savedEvent, undefined, currentStatus)
   }
-  return events.length
+  return acceptedCount
 }
