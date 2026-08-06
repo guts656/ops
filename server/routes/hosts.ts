@@ -18,6 +18,7 @@ const hostFiltersSchema = z.object({
   status: z.enum(['在线', '离线', '纳管中']).optional(),
   tag: z.string().optional(),
   group: z.string().optional(),
+  agentVersion: z.string().optional(),
 })
 
 const addHostSchema = z.object({

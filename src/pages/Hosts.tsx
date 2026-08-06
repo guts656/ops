@@ -26,6 +26,7 @@ export default function Hosts() {
     auditLogs,
     groups,
     tags,
+    agentVersions,
     loading,
     addModalOpen,
     batchResults,
@@ -129,6 +130,7 @@ export default function Hosts() {
       <Form.Item name="keyword"><Input allowClear placeholder="搜索 IP / 主机名" /></Form.Item>
       <Form.Item name="tag"><Select allowClear placeholder="标签" options={tags.map((value) => ({ label: value, value }))} /></Form.Item>
       <Form.Item name="group"><Select allowClear placeholder="主机组" options={groups.map((value) => ({ label: value, value }))} /></Form.Item>
+      <Form.Item name="agentVersion"><Select allowClear placeholder="Agent 版本" options={agentVersions.map((value) => ({ label: value, value }))} /></Form.Item>
       <Form.Item><Space><Button type="primary" htmlType="submit">筛选</Button><Button onClick={() => updateFilters({})}>重置</Button></Space></Form.Item>
     </Form>
   )

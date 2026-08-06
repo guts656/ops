@@ -20,6 +20,7 @@ interface HostStore {
   filters: HostFilters
   groups: string[]
   tags: string[]
+  agentVersions: string[]
   addModalOpen: boolean
   batchResults: BatchAddResult[]
   loading: boolean
@@ -70,6 +71,7 @@ export const useHostStore = create<HostStore>((set, get) => ({
   filters: {},
   groups: [],
   tags: [],
+  agentVersions: [],
   addModalOpen: false,
   batchResults: [],
   loading: false,
@@ -77,7 +79,7 @@ export const useHostStore = create<HostStore>((set, get) => ({
   async load() {
     set({ loading: true })
     const [hosts, auditLogs, options] = await Promise.all([queryHosts(get().filters), getHostAuditLogs(), getHostOptions()])
-    set({ hosts, auditLogs, groups: options.groups, tags: options.tags, loading: false })
+    set({ hosts, auditLogs, groups: options.groups, tags: options.tags, agentVersions: options.agentVersions, loading: false })
   },
   async refreshHosts() {
     const hosts = await queryHosts(get().filters)
@@ -120,6 +122,7 @@ export const useHostStore = create<HostStore>((set, get) => ({
       auditLogs,
       groups: options.groups,
       tags: options.tags,
+      agentVersions: options.agentVersions,
       batchResults,
       addModalOpen: failedCount > 0,
     }))
@@ -137,7 +140,7 @@ export const useHostStore = create<HostStore>((set, get) => ({
   async updateHost(id, values) {
     const updated = await updateHostApi(id, values)
     const [auditLogs, options] = await Promise.all([refreshAuditLogs(), getHostOptions()])
-    set((state) => ({ hosts: replaceHost(state.hosts, updated), selectedHost: state.selectedHost?.id === id ? updated : state.selectedHost, auditLogs, groups: options.groups, tags: options.tags }))
+    set((state) => ({ hosts: replaceHost(state.hosts, updated), selectedHost: state.selectedHost?.id === id ? updated : state.selectedHost, auditLogs, groups: options.groups, tags: options.tags, agentVersions: options.agentVersions }))
   },
   async deleteHost(id) {
     await deleteHostApi(id)

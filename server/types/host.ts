@@ -81,6 +81,7 @@ export interface HostFilters {
   status?: HostStatus
   tag?: string
   group?: string
+  agentVersion?: string
 }
 
 export interface AgentJob {

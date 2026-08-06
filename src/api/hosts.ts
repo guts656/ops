@@ -43,8 +43,8 @@ export async function getHostServiceEvents(id: string): Promise<ServiceEventItem
   return response.data.data
 }
 
-export async function getHostOptions(): Promise<{ groups: string[]; tags: string[] }> {
-  const response = await http.get<{ groups: string[]; tags: string[] }>('/hosts/options')
+export async function getHostOptions(): Promise<{ groups: string[]; tags: string[]; agentVersions: string[] }> {
+  const response = await http.get<{ groups: string[]; tags: string[]; agentVersions: string[] }>('/hosts/options')
   return response.data
 }
 

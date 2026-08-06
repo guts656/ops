@@ -377,6 +377,7 @@ export async function queryHosts(filters: HostFilters) {
     where: {
       status: filters.status,
       group: filters.group,
+      agentVersion: filters.agentVersion,
       tags: filters.tag ? { has: filters.tag } : undefined,
       OR: keyword ? [{ ip: { contains: keyword } }, { hostname: { contains: keyword, mode: 'insensitive' } }] : undefined,
     },
@@ -413,10 +414,11 @@ export async function setHostMaintenance(id: string, values: HostMaintenanceValu
 }
 
 export async function getHostOptions() {
-  const hosts = await prisma.host.findMany({ select: { group: true, tags: true } })
+  const hosts = await prisma.host.findMany({ select: { group: true, tags: true, agentVersion: true } })
   const groups = Array.from(new Set([...hostGroups, ...hosts.map((host) => host.group).filter(Boolean)])).sort()
   const tags = Array.from(new Set([...hostTags, ...hosts.flatMap((host) => host.tags).filter(Boolean)])).sort()
-  return { groups, tags }
+  const agentVersions = Array.from(new Set(hosts.map((host) => host.agentVersion).filter(Boolean))).sort()
+  return { groups, tags, agentVersions }
 }
 
 export async function getHostAuditLogs() {
