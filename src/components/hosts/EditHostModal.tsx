@@ -1,6 +1,7 @@
 import { AutoComplete, Form, Input, InputNumber, Modal, Select } from 'antd'
 import { useEffect } from 'react'
 import type { EditHostValues, Host } from '../../types/host'
+import EditableTagsInput from './EditableTagsInput'
 
 interface Props {
   open: boolean
@@ -43,7 +44,7 @@ export default function EditHostModal({ open, host, groups, tags, loading, onCan
           <Form.Item name="osVersion" label="系统版本" rules={[{ required: true, message: '请输入系统版本' }]}><Input /></Form.Item>
           <Form.Item name="sshPort" label="远程端口" rules={[{ required: true, message: '请输入远程端口' }]}><InputNumber min={1} max={65535} style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="group" label="主机组" rules={[{ required: true, message: '请选择或输入主机组' }]}><AutoComplete options={groups.map((value) => ({ label: value, value }))} placeholder="选择或输入主机组" filterOption={(inputValue, option) => String(option?.value ?? '').toLowerCase().includes(inputValue.toLowerCase())} /></Form.Item>
-          <Form.Item name="tags" label="标签"><Select mode="tags" options={tags.map((value) => ({ label: value, value }))} /></Form.Item>
+          <Form.Item name="tags" label="标签"><EditableTagsInput options={tags} /></Form.Item>
         </div>
       </Form>
     </Modal>

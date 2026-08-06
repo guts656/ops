@@ -1,6 +1,7 @@
 import { CheckCircleOutlined, CloseCircleOutlined, LinkOutlined } from '@ant-design/icons'
 import { Alert, AutoComplete, Button, Form, Input, InputNumber, Modal, Progress, Radio, Select, Space, Typography, message } from 'antd'
 import { useEffect, useState } from 'react'
+import EditableTagsInput from './hosts/EditableTagsInput'
 import type { AddHostFormValues, BatchAddResult } from '../types/host'
 
 interface Props {
@@ -85,7 +86,7 @@ export default function AddHostModal({ open, groups, tags, batchResults, onCance
           <Form.Item name="sshUsername" label={os === 'Windows' ? 'WinRM 用户名' : 'SSH 用户名'} rules={[{ required: true, message: '请输入远程用户名' }]}><Input /></Form.Item>
           <Form.Item name="sshPort" label={os === 'Windows' ? 'WinRM 端口' : 'SSH 端口'} rules={[{ required: true, message: '请输入端口' }]}><InputNumber min={1} max={65535} style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="group" label="主机组" rules={[{ required: true, message: '请选择或输入主机组' }]}><AutoComplete options={groups.map((value) => ({ label: value, value }))} placeholder="选择或输入主机组" filterOption={(inputValue, option) => String(option?.value ?? '').toLowerCase().includes(inputValue.toLowerCase())} /></Form.Item>
-          <Form.Item name="tags" label="标签"><Select mode="tags" options={tags.map((value) => ({ label: value, value }))} /></Form.Item>
+          <Form.Item name="tags" label="标签"><EditableTagsInput options={tags} /></Form.Item>
           <Form.Item name="authType" label="认证方式" rules={[{ required: true }]}><Radio.Group onChange={(event) => setAuthType(event.target.value)}><Radio.Button value="密码">密码</Radio.Button><Radio.Button value="密钥" disabled={os === 'Windows'}>密钥</Radio.Button></Radio.Group></Form.Item>
         </div>
         {authType === '密码' ? (
