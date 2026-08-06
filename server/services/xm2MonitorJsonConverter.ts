@@ -140,9 +140,9 @@ function parseHhmm(value: unknown) {
   return { ranges: deduped.slice(0, 8), warnings }
 }
 
-function description(item: LegacyMonitorItem, file: string) {
+function description(item: LegacyMonitorItem) {
   const more = item.more ?? {}
-  const parts = [`由 xm2 monitor.json 转换，默认停用：${file}`]
+  const parts: string[] = []
   const handle = text(more.handle)
   const describe = text(more.describe)
   if (describe) parts.push(describe)
@@ -200,13 +200,13 @@ export function convertXm2MonitorJson(input: unknown): Xm2ConvertPreviewResult {
       warnings: time.warnings,
       rule: {
         name: ruleName || `xm2-${index}`,
-        description: description(item, file),
+        description: description(item),
         enabled: false,
         source: file,
         keywords: [word],
         threshold: threshold(more.diffcount),
         windowMinutes: windowMinutes(item.interval),
-        cooldownMinutes: 30,
+        cooldownMinutes: 3,
         alertLevel: '警告',
         hostScope: 'all',
         hostIds: [],

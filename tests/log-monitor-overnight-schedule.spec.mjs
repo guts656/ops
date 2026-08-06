@@ -49,6 +49,16 @@ assert.deepEqual(converted.candidates[0].rule.timeRanges, [
   { start: '21:00', end: '23:59' },
   { start: '00:00', end: '02:30', dayOffset: 1 },
 ])
+assert.equal(converted.candidates[0].rule.cooldownMinutes, 3)
+assert.equal(converted.candidates[0].rule.description, '')
+
+const described = convertXm2MonitorJson([{
+  key: 'described-rule',
+  type: 'fileContent',
+  interval: 60,
+  more: { mode: 'include', file: 'C:\\logs\\described.log', word: 'ERROR', describe: '业务错误日志', handle: '联系值班人员' },
+}])
+assert.equal(described.candidates[0].rule.description, '业务错误日志\n处理建议：联系值班人员')
 
 assert.equal(CHINA_HOLIDAYS_2026.length, 33)
 assert.equal(CHINA_HOLIDAYS_2026[0], '2026-01-01')

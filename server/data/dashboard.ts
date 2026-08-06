@@ -236,12 +236,42 @@ function scoreTrendType(score: number) {
 }
 
 type ResourceSample = { cpu: number; memory: number; disk: number }
+type ResourceAggregateSample = ResourceSample & { sampledAt: Date; sampleCount: bigint | number }
 
 function averageResources(samples: ResourceSample[]) {
   return { cpu: avg(samples.map((sample) => sample.cpu)), memory: avg(samples.map((sample) => sample.memory)), disk: avg(samples.map((sample) => sample.disk)) }
 }
 
-export async function getDashboardData() {
+function aggregateSampleCount(samples: ResourceAggregateSample[]) {
+  return samples.reduce((sum, sample) => sum + Number(sample.sampleCount), 0)
+}
+
+function weightedAverageResources(samples: ResourceAggregateSample[]) {
+  const sampleCount = aggregateSampleCount(samples)
+  if (!sampleCount) return { cpu: 0, memory: 0, disk: 0 }
+  const weighted = (key: keyof ResourceSample) => Math.round(samples.reduce((sum, sample) => sum + sample[key] * Number(sample.sampleCount), 0) / sampleCount)
+  return { cpu: weighted('cpu'), memory: weighted('memory'), disk: weighted('disk') }
+}
+
+async function getAggregatedResourceSamples(resourceWindowStart: Date) {
+  return prisma.$queryRaw<ResourceAggregateSample[]>`
+    SELECT
+      date_trunc('hour', point.sampled_at) + (extract(minute from point.sampled_at)::int / 30) * interval '30 minutes' AS "sampledAt",
+      avg(point.cpu)::double precision AS cpu,
+      avg(point.memory)::double precision AS memory,
+      avg(point.disk)::double precision AS disk,
+      count(*)::bigint AS "sampleCount"
+    FROM host_resource_points point
+    INNER JOIN hosts host ON host.id = point.host_id
+    WHERE point.sampled_at >= ${resourceWindowStart}
+      AND host.status = '在线'
+      AND host.maintenance_enabled = false
+    GROUP BY 1
+    ORDER BY 1
+  `
+}
+
+async function loadDashboardData() {
   const startOfToday = new Date()
   startOfToday.setHours(0, 0, 0, 0)
   const startOfTrend = trendDates()[0]
@@ -283,17 +313,14 @@ export async function getDashboardData() {
     // 最近活动
     prisma.batchJob.findMany({ orderBy: { startedAt: 'desc' }, take: 5, include: { targets: true } }),
     prisma.selfHealingExecution.findMany({ orderBy: { createdAt: 'desc' }, take: 5 }),
-    prisma.hostResourcePoint.findMany({
-      where: { sampledAt: { gte: resourceWindowStart }, host: { status: '在线', maintenanceEnabled: false } },
-      select: { sampledAt: true, cpu: true, memory: true, disk: true },
-    }),
+    getAggregatedResourceSamples(resourceWindowStart),
   ])
 
   const onlineHosts = hosts.filter((host) => host.status === '在线').length
   const hostOnlineRate = hosts.length ? (onlineHosts / hosts.length) * 100 : 100
   const tradingResourcePoints = resourcePoints.filter((point) => isTradingTime(point.sampledAt, 'CN_INTERNAL', tradingSessionSettings))
   const fallbackResources = averageResources(hosts.map((host) => ({ cpu: host.cpu, memory: host.memory, disk: host.disk })))
-  const resourceAverages = tradingResourcePoints.length ? averageResources(tradingResourcePoints) : fallbackResources
+  const resourceAverages = tradingResourcePoints.length ? weightedAverageResources(tradingResourcePoints) : fallbackResources
   const avgCpu = resourceAverages.cpu
   const avgMemory = resourceAverages.memory
   const avgDisk = resourceAverages.disk
@@ -502,8 +529,8 @@ export async function getDashboardData() {
     resourceMonitorMeta: {
       scope: 'trading_sessions',
       windowDays: tradingSessionSettings.windowDays,
-      sampleCount: tradingResourcePoints.length,
-      totalSampleCount: resourcePoints.length,
+      sampleCount: aggregateSampleCount(tradingResourcePoints),
+      totalSampleCount: aggregateSampleCount(resourcePoints),
       fallback: tradingResourcePoints.length === 0,
       label: `近 ${tradingSessionSettings.windowDays} 天交易时段平均，已排除开盘前/收盘后/周末`,
     },
@@ -552,5 +579,26 @@ export async function getDashboardData() {
       triggeredAt: e.triggeredAt,
       duration: e.duration,
     })),
+  }
+}
+
+type DashboardData = Awaited<ReturnType<typeof loadDashboardData>>
+
+const DASHBOARD_CACHE_MS = 15_000
+let dashboardCache: { data: DashboardData; expiresAt: number } | undefined
+let dashboardLoad: Promise<DashboardData> | undefined
+
+export async function getDashboardData(): Promise<DashboardData> {
+  const now = Date.now()
+  if (dashboardCache && dashboardCache.expiresAt > now) return dashboardCache.data
+  if (dashboardLoad) return dashboardLoad
+
+  dashboardLoad = loadDashboardData()
+  try {
+    const data = await dashboardLoad
+    dashboardCache = { data, expiresAt: Date.now() + DASHBOARD_CACHE_MS }
+    return data
+  } finally {
+    dashboardLoad = undefined
   }
 }
