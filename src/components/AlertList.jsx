@@ -31,30 +31,11 @@ function HostTargetTags({ item }) {
       {visibleHosts.map((host) => (
         <span key={host.id || host.ip || host.hostname}>
           <Tag color="geekblue">IP {host.ip || host.hostname}</Tag>
-          {[host.group, ...(host.tags || [])].filter(Boolean).slice(0, 3).map((label) => <Tag key={`${host.id}-${label}`}>{label}</Tag>)}
+          {(host.tags || []).filter(Boolean).slice(0, 3).map((label) => <Tag key={`${host.id}-${label}`}>{label}</Tag>)}
         </span>
       ))}
       {remaining > 0 && <Tag>+{remaining} 台</Tag>}
     </>
-  )
-}
-
-function HostTargetSummary({ item }) {
-  const hosts = alertHostTargets(item)
-  const labelHosts = hosts.slice(0, 3).map((host) => ({
-    id: host.id || host.ip || host.hostname,
-    labels: [host.group, ...(host.tags || [])].filter(Boolean).slice(0, 4),
-  })).filter((host) => host.labels.length)
-  if (!labelHosts.length) return null
-  return (
-    <Flex gap={6} align="center" wrap>
-      <Typography.Text type="secondary">主机：</Typography.Text>
-      {labelHosts.map((host) => (
-        <Flex key={host.id} gap={4} align="center" wrap>
-          {host.labels.map((label) => <Tag key={`${host.id}-${label}`}>{label}</Tag>)}
-        </Flex>
-      ))}
-    </Flex>
   )
 }
 

@@ -5,10 +5,11 @@ async function source(path) {
   return readFile(new URL(`../${path}`, import.meta.url), 'utf8')
 }
 
-const [schema, route, data, types, panel] = await Promise.all([
+const [schema, route, data, alertContext, types, panel] = await Promise.all([
   source('prisma/schema.prisma'),
   source('server/routes/hostResourceMonitors.ts'),
   source('server/data/hostResourceMonitorRules.ts'),
+  source('server/services/alertHostContext.ts'),
   source('src/types/hostResourceMonitor.ts'),
   source('src/components/log-monitoring/HostResourceMonitorPanel.tsx'),
 ])
@@ -23,8 +24,8 @@ assert.match(data, /prisma\.hostResourcePoint\.findMany/, 'duration evaluation s
 assert.match(data, /allAboveThreshold/, 'duration evaluation should require all sampled values to stay above threshold')
 assert.match(data, /windowCovered/, 'duration evaluation should require enough history to cover the window')
 assert.match(data, /\$\{label\} .*?\$\{durationMinutes\} .*?\$\{rule\.threshold\}/, 'alert content should mention sustained duration')
-assert.match(data, /function hostTagText\(host: HostTarget\)/, 'resource alert content should include host tags')
-assert.match(data, /const hostInfo = `\$\{hostTagText\(host\)\}--\$\{host\.ip\}--\$\{hostNameText\(host\)\}`/, 'resource alert content should render compact tags-ip-host prefix')
+assert.match(alertContext, /tags\.length \? tags\.join\('、'\) : '无标签'/, 'shared alert content should include host tags')
+assert.match(alertContext, /--\$\{target\.ip \|\| '未知IP'\}--/, 'shared alert content should render compact tags-ip-host prefix')
 assert.match(data, /select: \{ id: true, ip: true, hostname: true, group: true, tags: true/, 'resource evaluator should load host tags')
 assert.match(data, /hostIp: host\.ip, group: host\.group, tags: host\.tags/, 'resource alert metadata should include host tags')
 assert.match(panel, /durationMinutes:\s*values\.durationMinutes/, 'UI should submit duration minutes')

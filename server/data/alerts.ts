@@ -5,6 +5,7 @@ import { ingestAlert, toAlertItem } from '../services/alertIngestionService'
 import { getNoiseReductionStats, listSuppressedAlerts, suppressFingerprint, unsuppressFingerprint } from '../services/alertNoiseReductionService'
 import { emitAlertEvent } from '../services/realtime'
 import { shanghaiTime, startOfShanghaiDayUtc } from '../utils/time'
+import { alertMetadataHostIds } from '../services/alertHostContext'
 
 const levels: AlertItem['level'][] = ['紧急', '严重', '警告', '提示']
 const statuses: AlertItem['status'][] = ['待处理', '处理中', '已解决']
@@ -54,23 +55,12 @@ function queryWhere(filters: AlertFilters): Prisma.AlertWhereInput {
   }
 }
 
-function metadataObject(value: unknown) {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
-}
-
 function pushHostId(ids: Set<string>, value: unknown) {
   if (typeof value === 'string' && value.trim()) ids.add(value.trim())
 }
 
 function hostIdsFromAlert(alert: { metadata: unknown; relatedType?: string | null; relatedId?: string | null }) {
-  const ids = new Set<string>()
-  const metadata = metadataObject(alert.metadata)
-  pushHostId(ids, metadata.hostId)
-  pushHostId(ids, metadata.sourceHostId)
-  pushHostId(ids, metadata.probeHostId)
-  if (Array.isArray(metadata.hostIds)) {
-    for (const hostId of metadata.hostIds) pushHostId(ids, hostId)
-  }
+  const ids = new Set(alertMetadataHostIds(alert.metadata))
   if (alert.relatedType === 'host') pushHostId(ids, alert.relatedId)
   return Array.from(ids)
 }
@@ -157,7 +147,7 @@ export async function acknowledgeAlert(id: string, operator: string) {
   if (!current) return undefined
   const updated = await prisma.alert.update({ where: { id }, data: { status: current.status === '已解决' ? '已解决' : '处理中', acknowledgedAt: nowText(), owner: operator } })
   await appendAudit(operator, '确认告警', updated.id, `${updated.service}：${updated.title || updated.content}`)
-  const item = toAlertItem(updated)
+  const item = { ...toAlertItem(updated), ...(current.hostTargets?.length ? { hostTargets: current.hostTargets } : {}) }
   emitAlertEvent('alert:updated', item)
   return item
 }
@@ -167,7 +157,7 @@ export async function resolveAlert(id: string, operator: string) {
   if (!current) return undefined
   const updated = await prisma.alert.update({ where: { id }, data: { status: '已解决', resolvedAt: nowText(), owner: operator } })
   await appendAudit(operator, '解决告警', updated.id, `${updated.service}：${updated.title || updated.content}`)
-  const item = toAlertItem(updated)
+  const item = { ...toAlertItem(updated), ...(current.hostTargets?.length ? { hostTargets: current.hostTargets } : {}) }
   emitAlertEvent('alert:resolved', item)
   return item
 }

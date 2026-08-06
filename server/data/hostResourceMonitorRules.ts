@@ -166,15 +166,6 @@ function serviceText(host: HostTarget) {
   return `${host.hostname || host.ip} (${host.ip})`
 }
 
-function hostNameText(host: HostTarget) {
-  return host.hostname || host.ip
-}
-
-function hostTagText(host: HostTarget) {
-  const labels = (host.tags || []).filter(Boolean)
-  return labels.length ? labels.join('、') : '未设置'
-}
-
 async function getSustainedMetricState(rule: HostResourceMonitorRule, host: HostTarget, metric: HostResourceMetric, date: Date): Promise<SustainedMetricState> {
   const durationMinutes = Math.max(1, rule.durationMinutes ?? 1)
   if (durationMinutes <= 1) {
@@ -237,10 +228,9 @@ export async function listHostResourceMonitorAlerts(ruleId?: string) {
 async function triggerMetricAlert(rule: HostResourceMonitorRule, host: HostTarget, metric: HostResourceMetric, value: number, sampledAt: Date, state?: SustainedMetricState) {
   const label = metricLabels[metric]
   const durationMinutes = Math.max(1, rule.durationMinutes ?? 1)
-  const hostInfo = `${hostTagText(host)}--${host.ip}--${hostNameText(host)}`
   const content = durationMinutes > 1
-    ? `${hostInfo}；${label} 使用率已持续 ${durationMinutes} 分钟不低于 ${rule.threshold}%，最新值 ${value}%。窗口：${nowText(state?.windowStart ?? new Date(sampledAt.getTime() - durationMinutes * 60_000))} ~ ${nowText(sampledAt)}。`
-    : `${hostInfo}；${label} 使用率 ${value}%，达到阈值 ${rule.threshold}%。`
+    ? `${label} 使用率已持续 ${durationMinutes} 分钟不低于 ${rule.threshold}%，最新值 ${value}%。窗口：${nowText(state?.windowStart ?? new Date(sampledAt.getTime() - durationMinutes * 60_000))} ~ ${nowText(sampledAt)}。`
+    : `${label} 使用率 ${value}%，达到阈值 ${rule.threshold}%。`
   const result = await ingestAlert({
     level: rule.alertLevel,
     time: nowText(sampledAt),

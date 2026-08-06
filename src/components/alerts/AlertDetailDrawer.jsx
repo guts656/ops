@@ -34,6 +34,7 @@ export default function AlertDetailDrawer({ alert, open, onClose }) {
           <Descriptions.Item label="状态"><Tag color={statusColor[alert.status]}>{alert.status}</Tag></Descriptions.Item>
           <Descriptions.Item label="来源">{alert.source}</Descriptions.Item>
           <Descriptions.Item label="服务/范围">{alert.service}</Descriptions.Item>
+          <Descriptions.Item label="关联主机"><HostTargets alert={alert} /></Descriptions.Item>
           <Descriptions.Item label="内容">{alert.content}</Descriptions.Item>
           <Descriptions.Item label="处理人">{alert.owner}</Descriptions.Item>
           <Descriptions.Item label="发生时间">{alert.time}</Descriptions.Item>

@@ -9,6 +9,7 @@ import { handleAlertWithSelfHealing } from './alertHandlingService'
 import { getOutboundNotificationSettings } from '../data/settings'
 import { isHostInMaintenance } from '../data/hosts'
 import { sendMonitorNotifications } from './outboundNotificationService'
+import { prefixAlertContent, resolveAlertHostTargets } from './alertHostContext'
 
 const severityLevelMap: Record<string, AlertLevel> = {
   critical: '紧急',
@@ -121,10 +122,13 @@ export async function ingestAlert(input: CreateAlertInput): Promise<CreateAlertR
   const level = toLevel(input.level, input.severity)
   const source = input.source?.trim() || '平台'
   const service = input.service?.trim() || '未指定服务'
-  const content = input.content.trim()
+  const hostTargets = await resolveAlertHostTargets(input)
+  const content = prefixAlertContent(input.content, hostTargets)
   const title = input.title?.trim() || content.slice(0, 80)
   const owner = input.owner?.trim() || source
-  const metadata = input.metadata ?? {}
+  const metadata = hostTargets.length
+    ? { ...(input.metadata ?? {}), alertHostIds: hostTargets.map((host) => host.id) }
+    : input.metadata ?? {}
   const now = new Date()
   const maintenanceHostId = await resolveMaintenanceHostId(input)
   if (maintenanceHostId && await isHostInMaintenance(maintenanceHostId, now)) {
@@ -188,7 +192,7 @@ export async function ingestAlert(input: CreateAlertInput): Promise<CreateAlertR
     })
 
   await markLatestAlert(noiseReduction.fingerprint, alert.id)
-  const alertItem = toAlertItem(alert)
+  const alertItem = { ...toAlertItem(alert), ...(hostTargets.length ? { hostTargets } : {}) }
   emitAlertEvent(activeDuplicate ? 'alert:updated' : 'alert:new', alertItem)
   let notificationResults: string[] = []
   if (!alertItem.isSuppressed) {
