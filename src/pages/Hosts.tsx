@@ -1,16 +1,18 @@
-import { CloudServerOutlined, PlusOutlined, WarningOutlined, CheckCircleOutlined, ToolOutlined } from '@ant-design/icons'
-import { Button, Card, Col, Form, Input, Popconfirm, Progress, Row, Segmented, Select, Space, Statistic, Table, Tabs, Tag, Typography, message } from 'antd'
+import { CloudServerOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined, TagsOutlined, WarningOutlined, CheckCircleOutlined, ToolOutlined } from '@ant-design/icons'
+import { Alert, Button, Card, Col, Form, Input, Modal, Popconfirm, Progress, Row, Segmented, Select, Space, Statistic, Table, Tabs, Tag, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useState } from 'react'
+import type { Key } from 'react'
 import { useNavigate } from 'react-router-dom'
 import PermissionGate from '../components/auth/PermissionGate'
 import AddHostModal from '../components/AddHostModal'
 import HostAuditLogPanel from '../components/hosts/HostAuditLogPanel'
+import AgentCredentialModal from '../components/hosts/AgentCredentialModal'
 import HostMaintenanceModal from '../components/hosts/HostMaintenanceModal'
 import EditHostModal from '../components/hosts/EditHostModal'
 import LogCollectionRulePanel from '../components/hosts/LogCollectionRulePanel'
 import { PERMISSIONS } from '../config/permissions'
-import type { EditHostValues, Host, HostCategory, HostFilters } from '../types/host'
+import type { EditHostValues, Host, HostCategory, HostConnectionValues, HostFilters } from '../types/host'
 import { useHostStore } from '../stores/hostStore'
 import { getHostCategory, hostCategoryColor } from '../utils/hostStatus'
 import { formatShanghaiTime } from '../utils/time'
@@ -37,6 +39,10 @@ export default function Hosts() {
     createHosts,
     updateHost,
     deleteHost,
+    batchDeleteHosts,
+    batchSetMaintenance,
+    batchUpdateTags,
+    batchRestartAgent,
     remanageHost,
     refreshHosts,
     setHostMaintenance,
@@ -48,6 +54,13 @@ export default function Hosts() {
   const [editing, setEditing] = useState(false)
   const [remanagingId, setRemanagingId] = useState<string>()
   const [activeCategory, setActiveCategory] = useState<HostCategoryFilter>('全部')
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
+  const [batchMaintenanceOpen, setBatchMaintenanceOpen] = useState(false)
+  const [batchTagsOpen, setBatchTagsOpen] = useState(false)
+  const [batchTagMode, setBatchTagMode] = useState<'add' | 'remove'>('add')
+  const [batchRestartOpen, setBatchRestartOpen] = useState(false)
+  const [batchLoading, setBatchLoading] = useState(false)
+  const [batchTagForm] = Form.useForm<{ tags: string[] }>()
 
   useEffect(() => {
     load()
@@ -104,6 +117,68 @@ export default function Hosts() {
     }
   }
 
+  const clearSelection = () => setSelectedRowKeys([])
+
+  const submitBatchMaintenance = async (values: Parameters<typeof batchSetMaintenance>[1]) => {
+    setBatchLoading(true)
+    try {
+      const count = await batchSetMaintenance(selectedIds, values)
+      message.success(`已将 ${count} 台主机移入维护`)
+      setBatchMaintenanceOpen(false)
+      clearSelection()
+    } finally {
+      setBatchLoading(false)
+    }
+  }
+
+  const submitBatchExitMaintenance = async () => {
+    setBatchLoading(true)
+    try {
+      const count = await batchSetMaintenance(selectedIds, { enabled: false })
+      message.success(`已取消 ${count} 台主机维护`)
+      clearSelection()
+    } finally {
+      setBatchLoading(false)
+    }
+  }
+
+  const submitBatchTags = async (values: { tags: string[] }) => {
+    setBatchLoading(true)
+    try {
+      const count = await batchUpdateTags(selectedIds, values.tags, batchTagMode)
+      message.success(batchTagMode === 'add' ? `已为 ${count} 台主机打标签` : `已从 ${count} 台主机移除标签`)
+      setBatchTagsOpen(false)
+      clearSelection()
+    } finally {
+      setBatchLoading(false)
+    }
+  }
+
+  const submitBatchRestartAgent = async (values: HostConnectionValues) => {
+    setBatchLoading(true)
+    try {
+      const count = await batchRestartAgent(selectedIds, values)
+      message.success(`已重启 ${count} 台主机 Agent`)
+      setBatchRestartOpen(false)
+      clearSelection()
+    } finally {
+      setBatchLoading(false)
+    }
+  }
+
+  const submitBatchDelete = async () => {
+    setBatchLoading(true)
+    try {
+      const count = await batchDeleteHosts(selectedIds)
+      message.success(`已删除 ${count} 台主机`)
+      clearSelection()
+    } finally {
+      setBatchLoading(false)
+    }
+  }
+
+  const selectedIds = selectedRowKeys.map(String)
+  const selectedHosts = hosts.filter((host) => selectedIds.includes(host.id))
   const visibleHosts = activeCategory === '全部' ? hosts : hosts.filter((host) => getHostCategory(host) === activeCategory)
   const onlineCount = hosts.filter((host) => getHostCategory(host) === '在线').length
   const offlineCount = hosts.filter((host) => getHostCategory(host) === '离线').length
@@ -133,6 +208,34 @@ export default function Hosts() {
     </Form>
   )
 
+  const batchToolbar = selectedHosts.length ? (
+    <Alert
+      type="info"
+      showIcon
+      style={{ marginBottom: 16 }}
+      message={(
+        <Space wrap>
+          <Typography.Text>已选择 {selectedHosts.length} 台主机</Typography.Text>
+          <PermissionGate permission={PERMISSIONS.HOSTS_MANAGE}>
+            <Button size="small" icon={<ToolOutlined />} onClick={() => setBatchMaintenanceOpen(true)}>移入维护</Button>
+            <Button size="small" onClick={submitBatchExitMaintenance} loading={batchLoading}>取消维护</Button>
+            <Button size="small" icon={<TagsOutlined />} onClick={() => { setBatchTagMode('add'); batchTagForm.resetFields(); setBatchTagsOpen(true) }}>打标签</Button>
+            <Button size="small" onClick={() => { setBatchTagMode('remove'); batchTagForm.resetFields(); setBatchTagsOpen(true) }}>移除标签</Button>
+          </PermissionGate>
+          <PermissionGate permission={PERMISSIONS.HOSTS_AGENT}>
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => setBatchRestartOpen(true)}>重启 Agent</Button>
+          </PermissionGate>
+          <PermissionGate permission={PERMISSIONS.HOSTS_DELETE}>
+            <Popconfirm title="确认批量删除主机？" description={`将删除 ${selectedHosts.length} 台主机，并记录审计日志。`} okText="确认删除" okButtonProps={{ danger: true, loading: batchLoading }} onConfirm={submitBatchDelete}>
+              <Button size="small" danger icon={<DeleteOutlined />}>删除主机</Button>
+            </Popconfirm>
+          </PermissionGate>
+          <Button size="small" type="link" onClick={clearSelection}>取消选择</Button>
+        </Space>
+      )}
+    />
+  ) : null
+
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       <Card>
@@ -155,7 +258,7 @@ export default function Hosts() {
       </Row>
 
       <Tabs className="hosts-tabs" items={[
-        { key: 'list', label: '主机列表', children: <Card className="hosts-list-card" title="主机列表">{filterForm}<Segmented<HostCategoryFilter> value={activeCategory} onChange={setActiveCategory} options={['全部', '在线', '离线', '维护']} style={{ marginBottom: 16 }} /><Table className="hosts-table" rowKey="id" loading={loading} columns={columns} dataSource={visibleHosts} pagination={{ pageSize: 6 }} scroll={{ x: 1520 }} /></Card> },
+        { key: 'list', label: '主机列表', children: <Card className="hosts-list-card" title="主机列表">{filterForm}{batchToolbar}<Segmented<HostCategoryFilter> value={activeCategory} onChange={setActiveCategory} options={['全部', '在线', '离线', '维护']} style={{ marginBottom: 16 }} /><Table className="hosts-table" rowKey="id" loading={loading} columns={columns} dataSource={visibleHosts} pagination={{ pageSize: 6 }} rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }} scroll={{ x: 1520 }} /></Card> },
         { key: 'log-rules', label: '日志采集配置', children: <LogCollectionRulePanel hosts={hosts} groups={groups} /> },
         { key: 'audit', label: '审计日志', children: <HostAuditLogPanel logs={auditLogs} /> },
       ]} />
@@ -163,6 +266,14 @@ export default function Hosts() {
       <AddHostModal open={addModalOpen} groups={groups} tags={tags} batchResults={batchResults} onCancel={closeAddModal} onSubmit={createHosts} onTestConnection={testConnection} />
       <EditHostModal open={Boolean(editingHost)} host={editingHost} groups={groups} tags={tags} loading={editing} onCancel={() => setEditingHost(undefined)} onSubmit={submitEdit} />
       <HostMaintenanceModal open={Boolean(maintenanceHost)} host={maintenanceHost} loading={maintenanceLoading} onCancel={() => setMaintenanceHost(undefined)} onSubmit={submitMaintenance} />
+      <HostMaintenanceModal open={batchMaintenanceOpen} host={selectedHosts[0]} title={`批量移入维护：${selectedHosts.length} 台主机`} loading={batchLoading} onCancel={() => setBatchMaintenanceOpen(false)} onSubmit={submitBatchMaintenance} />
+      <Modal title={batchTagMode === 'add' ? '批量打标签' : '批量移除标签'} open={batchTagsOpen} onCancel={() => setBatchTagsOpen(false)} onOk={() => batchTagForm.validateFields().then(submitBatchTags)} confirmLoading={batchLoading} destroyOnHidden>
+        <Alert showIcon type="info" style={{ marginBottom: 16 }} message={`将对 ${selectedHosts.length} 台主机执行${batchTagMode === 'add' ? '打标签' : '移除标签'}操作。`} />
+        <Form form={batchTagForm} layout="vertical">
+          <Form.Item name="tags" label="标签" rules={[{ required: true, message: '请选择或输入标签' }]}><Select mode="tags" options={tags.map((value) => ({ label: value, value }))} /></Form.Item>
+        </Form>
+      </Modal>
+      <AgentCredentialModal open={batchRestartOpen} title="批量重启 Agent 凭据" host={selectedHosts[0]} loading={batchLoading} onCancel={() => setBatchRestartOpen(false)} onSubmit={submitBatchRestartAgent} />
     </Space>
   )
 }

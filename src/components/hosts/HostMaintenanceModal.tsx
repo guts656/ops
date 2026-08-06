@@ -11,12 +11,13 @@ interface FormValues {
 interface Props {
   open: boolean
   host?: Host
+  title?: string
   loading?: boolean
   onCancel: () => void
   onSubmit: (values: HostMaintenanceValues) => Promise<void>
 }
 
-export default function HostMaintenanceModal({ open, host, loading = false, onCancel, onSubmit }: Props) {
+export default function HostMaintenanceModal({ open, host, title, loading = false, onCancel, onSubmit }: Props) {
   const [form] = Form.useForm<FormValues>()
 
   useEffect(() => {
@@ -32,7 +33,7 @@ export default function HostMaintenanceModal({ open, host, loading = false, onCa
   }
 
   return (
-    <Modal title={`进入维护：${host?.hostname || ''}`} open={open} onCancel={onCancel} onOk={handleOk} confirmLoading={loading} destroyOnHidden>
+    <Modal title={title || `进入维护：${host?.hostname || ''}`} open={open} onCancel={onCancel} onOk={handleOk} confirmLoading={loading} destroyOnHidden>
       <Alert showIcon type="warning" style={{ marginBottom: 16 }} message="维护期间该主机关联告警不会创建或外发，但服务事件、日志、检查记录仍会保留。" />
       <Form form={form} layout="vertical">
         <Form.Item name="reason" label="维护原因" rules={[{ required: true, message: '请输入维护原因' }]}>
