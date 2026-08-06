@@ -1,4 +1,4 @@
-import { CloudServerOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined, TagsOutlined, WarningOutlined, CheckCircleOutlined, ToolOutlined } from '@ant-design/icons'
+import { CloudServerOutlined, PlusOutlined, TagsOutlined, WarningOutlined, CheckCircleOutlined, ToolOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Col, Form, Input, Modal, Popconfirm, Progress, Row, Segmented, Select, Space, Statistic, Table, Tabs, Tag, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useState } from 'react'
@@ -7,12 +7,11 @@ import { useNavigate } from 'react-router-dom'
 import PermissionGate from '../components/auth/PermissionGate'
 import AddHostModal from '../components/AddHostModal'
 import HostAuditLogPanel from '../components/hosts/HostAuditLogPanel'
-import AgentCredentialModal from '../components/hosts/AgentCredentialModal'
 import HostMaintenanceModal from '../components/hosts/HostMaintenanceModal'
 import EditHostModal from '../components/hosts/EditHostModal'
 import LogCollectionRulePanel from '../components/hosts/LogCollectionRulePanel'
 import { PERMISSIONS } from '../config/permissions'
-import type { EditHostValues, Host, HostCategory, HostConnectionValues, HostFilters } from '../types/host'
+import type { EditHostValues, Host, HostCategory, HostFilters } from '../types/host'
 import { useHostStore } from '../stores/hostStore'
 import { getHostCategory, hostCategoryColor } from '../utils/hostStatus'
 import { formatShanghaiTime } from '../utils/time'
@@ -39,10 +38,8 @@ export default function Hosts() {
     createHosts,
     updateHost,
     deleteHost,
-    batchDeleteHosts,
     batchSetMaintenance,
     batchUpdateTags,
-    batchRestartAgent,
     remanageHost,
     refreshHosts,
     setHostMaintenance,
@@ -58,7 +55,6 @@ export default function Hosts() {
   const [batchMaintenanceOpen, setBatchMaintenanceOpen] = useState(false)
   const [batchTagsOpen, setBatchTagsOpen] = useState(false)
   const [batchTagMode, setBatchTagMode] = useState<'add' | 'remove'>('add')
-  const [batchRestartOpen, setBatchRestartOpen] = useState(false)
   const [batchLoading, setBatchLoading] = useState(false)
   const [batchTagForm] = Form.useForm<{ tags: string[] }>()
 
@@ -154,29 +150,6 @@ export default function Hosts() {
     }
   }
 
-  const submitBatchRestartAgent = async (values: HostConnectionValues) => {
-    setBatchLoading(true)
-    try {
-      const count = await batchRestartAgent(selectedIds, values)
-      message.success(`已重启 ${count} 台主机 Agent`)
-      setBatchRestartOpen(false)
-      clearSelection()
-    } finally {
-      setBatchLoading(false)
-    }
-  }
-
-  const submitBatchDelete = async () => {
-    setBatchLoading(true)
-    try {
-      const count = await batchDeleteHosts(selectedIds)
-      message.success(`已删除 ${count} 台主机`)
-      clearSelection()
-    } finally {
-      setBatchLoading(false)
-    }
-  }
-
   const selectedIds = selectedRowKeys.map(String)
   const selectedHosts = hosts.filter((host) => selectedIds.includes(host.id))
   const visibleHosts = activeCategory === '全部' ? hosts : hosts.filter((host) => getHostCategory(host) === activeCategory)
@@ -222,14 +195,6 @@ export default function Hosts() {
             <Button size="small" icon={<TagsOutlined />} onClick={() => { setBatchTagMode('add'); batchTagForm.resetFields(); setBatchTagsOpen(true) }}>打标签</Button>
             <Button size="small" onClick={() => { setBatchTagMode('remove'); batchTagForm.resetFields(); setBatchTagsOpen(true) }}>移除标签</Button>
           </PermissionGate>
-          <PermissionGate permission={PERMISSIONS.HOSTS_AGENT}>
-            <Button size="small" icon={<ReloadOutlined />} onClick={() => setBatchRestartOpen(true)}>重启 Agent</Button>
-          </PermissionGate>
-          <PermissionGate permission={PERMISSIONS.HOSTS_DELETE}>
-            <Popconfirm title="确认批量删除主机？" description={`将删除 ${selectedHosts.length} 台主机，并记录审计日志。`} okText="确认删除" okButtonProps={{ danger: true, loading: batchLoading }} onConfirm={submitBatchDelete}>
-              <Button size="small" danger icon={<DeleteOutlined />}>删除主机</Button>
-            </Popconfirm>
-          </PermissionGate>
           <Button size="small" type="link" onClick={clearSelection}>取消选择</Button>
         </Space>
       )}
@@ -273,7 +238,6 @@ export default function Hosts() {
           <Form.Item name="tags" label="标签" rules={[{ required: true, message: '请选择或输入标签' }]}><Select mode="tags" options={tags.map((value) => ({ label: value, value }))} /></Form.Item>
         </Form>
       </Modal>
-      <AgentCredentialModal open={batchRestartOpen} title="批量重启 Agent 凭据" host={selectedHosts[0]} loading={batchLoading} onCancel={() => setBatchRestartOpen(false)} onSubmit={submitBatchRestartAgent} />
     </Space>
   )
 }

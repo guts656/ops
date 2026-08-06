@@ -35,7 +35,6 @@ interface HostStore {
   loadHostDetail: (id: string) => Promise<void>
   updateHost: (id: string, values: EditHostValues) => Promise<void>
   deleteHost: (id: string) => Promise<void>
-  batchDeleteHosts: (ids: string[]) => Promise<number>
   setHostMaintenance: (id: string, values: HostMaintenanceValues) => Promise<void>
   batchSetMaintenance: (ids: string[], values: HostMaintenanceValues) => Promise<number>
   batchUpdateTags: (ids: string[], tags: string[], mode: 'add' | 'remove') => Promise<number>
@@ -48,7 +47,6 @@ interface HostStore {
   repairAgentBackendRoutes: (id: string, credentials: HostConnectionValues) => Promise<AgentBackendDiagnosisResult>
   reinstallAgent: (id: string, credentials: HostConnectionValues, options?: { apiBaseUrl?: string }) => Promise<void>
   restartAgent: (id: string, credentials: HostConnectionValues) => Promise<void>
-  batchRestartAgent: (ids: string[], credentials: HostConnectionValues) => Promise<number>
   startService: (id: string, serviceId: string, credentials: HostConnectionValues) => Promise<void>
   stopService: (id: string, serviceId: string, credentials: HostConnectionValues) => Promise<void>
   deleteServiceRecord: (id: string, serviceId: string) => Promise<void>
@@ -152,16 +150,6 @@ export const useHostStore = create<HostStore>((set, get) => ({
       auditLogs,
     }))
   },
-  async batchDeleteHosts(ids) {
-    await Promise.all(ids.map((id) => deleteHostApi(id)))
-    const auditLogs = await refreshAuditLogs()
-    set((state) => ({
-      hosts: state.hosts.filter((host) => !ids.includes(host.id)),
-      selectedHost: state.selectedHost && ids.includes(state.selectedHost.id) ? undefined : state.selectedHost,
-      auditLogs,
-    }))
-    return ids.length
-  },
   async setHostMaintenance(id, values) {
     const current = get().hosts.find((host) => host.id === id) ?? get().selectedHost
     if (!current) return
@@ -262,17 +250,6 @@ export const useHostStore = create<HostStore>((set, get) => ({
     const updated = await restartAgentApi(current, credentials)
     const [auditLogs, agentJobs] = await Promise.all([refreshAuditLogs(), getHostAgentJobs(id)])
     set((state) => ({ hosts: replaceHost(state.hosts, updated), selectedHost: state.selectedHost?.id === id ? updated : state.selectedHost, auditLogs, agentJobs }))
-  },
-  async batchRestartAgent(ids, credentials) {
-    const targets = get().hosts.filter((host) => ids.includes(host.id))
-    const updatedHosts = await Promise.all(targets.map((host) => restartAgentApi(host, credentials)))
-    const auditLogs = await refreshAuditLogs()
-    set((state) => ({
-      hosts: updatedHosts.reduce((items, updated) => replaceHost(items, updated), state.hosts),
-      selectedHost: updatedHosts.find((host) => host.id === state.selectedHost?.id) ?? state.selectedHost,
-      auditLogs,
-    }))
-    return updatedHosts.length
   },
   async startService(id, serviceId, credentials) {
     const current = get().hosts.find((host) => host.id === id) ?? get().selectedHost
