@@ -19,6 +19,7 @@ import dashboardRouter from './routes/dashboard.ts'
 import auditLogsRouter from './routes/auditLogs.ts'
 import selfHealingRouter from './routes/selfHealing.ts'
 import batchJobsRouter from './routes/batchJobs.ts'
+import topologyRouter from './routes/topology.ts'
 import { corsOrigin, isProduction, validateSecurityEnv } from './config/env.ts'
 import { prisma } from './db/prisma.ts'
 import { errorHandler } from './middleware/errorHandler.ts'
@@ -86,6 +87,7 @@ app.use('/api/dashboard', dashboardRouter)
 app.use('/api/audit/logs', auditLogsRouter)
 app.use('/api/self-healing', selfHealingRouter)
 app.use('/api/batch-jobs', batchJobsRouter)
+app.use('/api/topology', topologyRouter)
 app.use(errorHandler)
 
 setupRealtime(server)
