@@ -592,6 +592,59 @@ model HostAgentJob {
   @@map("host_agent_jobs")
 }
 
+model Topology {
+  id        String         @id @default(cuid())
+  name      String
+  type      String
+  remark    String         @default("")
+  nodes     TopologyNode[]
+  edges     TopologyEdge[]
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt @map("updated_at")
+
+  @@index([type])
+  @@map("topologies")
+}
+
+model TopologyNode {
+  id          String         @id @default(cuid())
+  topologyId  String         @map("topology_id")
+  name        String
+  type        String
+  status      String        @default("稳定")
+  description String        @default("")
+  x           Int           @default(80)
+  y           Int           @default(80)
+  topology    Topology       @relation(fields: [topologyId], references: [id], onDelete: Cascade)
+  outgoing    TopologyEdge[] @relation("TopologyEdgeSource")
+  incoming    TopologyEdge[] @relation("TopologyEdgeTarget")
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  @@index([topologyId])
+  @@index([type])
+  @@index([status])
+  @@map("topology_nodes")
+}
+
+model TopologyEdge {
+  id         String       @id @default(cuid())
+  topologyId String       @map("topology_id")
+  sourceId   String       @map("source_id")
+  targetId   String       @map("target_id")
+  label      String
+  topology   Topology     @relation(fields: [topologyId], references: [id], onDelete: Cascade)
+  source     TopologyNode @relation("TopologyEdgeSource", fields: [sourceId], references: [id], onDelete: Cascade)
+  target     TopologyNode @relation("TopologyEdgeTarget", fields: [targetId], references: [id], onDelete: Cascade)
+  createdAt  DateTime     @default(now()) @map("created_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+
+  @@index([topologyId])
+  @@index([sourceId])
+  @@index([targetId])
+  @@map("topology_edges")
+}
+
 model BatchJob {
   id              String           @id
   name            String

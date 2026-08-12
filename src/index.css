@@ -825,10 +825,19 @@ body {
   letter-spacing: 0.22em;
 }
 
+.static-topology-viewport {
+  overflow: auto;
+  border-radius: 18px;
+}
+
+.service-topology-current-row > td {
+  background: rgba(22, 119, 255, 0.12) !important;
+}
+
 .static-topology-canvas {
   position: relative;
-  height: 560px;
-  overflow: hidden;
+  min-width: 980px;
+  min-height: 560px;
   border: 1px solid rgba(97, 218, 251, 0.26);
   border-radius: 18px;
   background:
@@ -874,6 +883,15 @@ body {
   transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
 }
 
+.service-topology-canvas .static-topology-node {
+  cursor: grab;
+  user-select: none;
+}
+
+.service-topology-canvas .static-topology-node:active {
+  cursor: grabbing;
+}
+
 .static-topology-node:hover,
 .static-topology-node.active,
 .static-topology-node.linking {
@@ -890,12 +908,24 @@ body {
   border-color: rgba(82, 196, 26, 0.52);
 }
 
+.static-topology-node-host {
+  border-color: rgba(47, 84, 235, 0.54);
+}
+
 .static-topology-node-database {
   border-color: rgba(255, 122, 69, 0.58);
 }
 
 .static-topology-node-middleware {
   border-color: rgba(250, 173, 20, 0.58);
+}
+
+.static-topology-node-agent {
+  border-color: rgba(19, 194, 194, 0.58);
+}
+
+.static-topology-node-container {
+  border-color: rgba(235, 47, 150, 0.58);
 }
 
 .static-topology-node-note {

@@ -32,6 +32,7 @@ const permissionLabels: Record<Permission, string> = {
   [PERMISSIONS.ALERTS_MANAGE]: '处理告警中心',
   [PERMISSIONS.LOGS_VIEW]: '查看日志查询',
   [PERMISSIONS.TOPOLOGY_VIEW]: '查看服务拓扑',
+  [PERMISSIONS.TOPOLOGY_MANAGE]: '管理服务拓扑',
   [PERMISSIONS.HOSTS_VIEW]: '查看主机管理',
   [PERMISSIONS.HOSTS_MANAGE]: '管理主机',
   [PERMISSIONS.HOSTS_AGENT]: '管理主机 Agent',
