@@ -1,5 +1,5 @@
-import { CodeOutlined, DownloadOutlined, FileAddOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Col, Flex, Form, Input, InputNumber, Modal, Progress, Radio, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography, Upload, message } from 'antd'
+import { DownloadOutlined, FileAddOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons'
+import { Alert, Button, Card, Checkbox, Col, Flex, Form, Input, InputNumber, Modal, Progress, Radio, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography, Upload, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { UploadFile } from 'antd/es/upload/interface'
 import { useEffect, useMemo, useState } from 'react'
@@ -117,7 +117,9 @@ export default function BatchJobs() {
         const originFile = fileList[0]?.originFileObj
         if (!originFile) throw new Error('请上传文件')
         if (originFile.size > MAX_UPLOAD_FILE_SIZE) throw new Error('单个上传文件不能超过 5MB')
-        payload = { ...payload, fileName: values.fileName || originFile.name, fileContentBase64: await fileToBase64(originFile) }
+        payload = { ...payload, fileName: values.fileName || originFile.name, fileContentBase64: await fileToBase64(originFile), backupExisting: Boolean(values.backupExisting) }
+      } else {
+        payload = { ...payload, backupExisting: undefined }
       }
       if (values.type === 'compare_file' || values.type === 'download_file') {
         payload = { ...payload, maxFileSize: values.maxFileSize || DEFAULT_FILE_READ_LIMIT }
@@ -236,7 +238,7 @@ export default function BatchJobs() {
       </Card>
 
       <Modal title="新建批处理" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={() => form.submit()} confirmLoading={submitting} width={820} destroyOnHidden>
-        <Form form={form} layout="vertical" initialValues={{ type: 'upload_file', targetMode: 'hosts', targetOs: 'Linux', maxFileSize: DEFAULT_FILE_READ_LIMIT }} onFinish={submit}>
+        <Form form={form} layout="vertical" initialValues={{ type: 'upload_file', targetMode: 'hosts', targetOs: 'Linux', maxFileSize: DEFAULT_FILE_READ_LIMIT, backupExisting: true }} onFinish={submit}>
           <Form.Item name="name" label="任务名称" rules={[{ required: true, message: '请输入任务名称' }]}><Input placeholder="例如：批量对比配置文件" /></Form.Item>
           <Form.Item name="type" label="任务类型" rules={[{ required: true }]}><Radio.Group optionType="button" buttonStyle="solid" options={[{ label: '批量上传文件', value: 'upload_file' }, { label: '批量执行脚本', value: 'run_script' }, { label: '小文件对比', value: 'compare_file' }, { label: '小文件下载', value: 'download_file' }]} /></Form.Item>
           <Form.Item name="targetOs" label="目标系统" rules={[{ required: true }]}><Radio.Group optionType="button" buttonStyle="solid" onChange={() => form.setFieldsValue({ hostIds: [], hostGroup: undefined })} options={[{ label: 'Linux', value: 'Linux' }, { label: 'Windows', value: 'Windows' }]} /></Form.Item>
@@ -269,22 +271,27 @@ export default function BatchJobs() {
               <Form.Item name="targetDirectory" label="目标目录" rules={[{ required: true, message: targetOs === 'Windows' ? '请输入 Windows 盘符绝对路径' : '请输入 Linux 绝对路径' }]}><Input placeholder={targetOs === 'Windows' ? 'C:\\Temp\\ops-upload' : '/tmp/ops-upload'} /></Form.Item>
               <Form.Item name="fileName" label={jobType === 'upload_file' ? '远端文件名' : '文件名'} rules={jobType === 'upload_file' ? undefined : [{ required: true, message: '请输入文件名' }]}><Input placeholder={jobType === 'upload_file' ? '默认使用上传文件名' : '例如 app.conf'} /></Form.Item>
               {jobType === 'upload_file' ? (
-                <Form.Item label="上传文件" required>
-                  <Upload
-                    beforeUpload={(file) => {
-                      if (file.size > MAX_UPLOAD_FILE_SIZE) {
-                        message.error('单个上传文件不能超过 5MB')
-                        return Upload.LIST_IGNORE
-                      }
-                      return false
-                    }}
-                    maxCount={1}
-                    fileList={fileList}
-                    onChange={({ fileList }) => setFileList(fileList)}
-                  >
-                    <Button icon={<UploadOutlined />}>选择文件</Button>
-                  </Upload>
-                </Form.Item>
+                <>
+                  <Form.Item label="上传文件" required>
+                    <Upload
+                      beforeUpload={(file) => {
+                        if (file.size > MAX_UPLOAD_FILE_SIZE) {
+                          message.error('单个上传文件不能超过 5MB')
+                          return Upload.LIST_IGNORE
+                        }
+                        return false
+                      }}
+                      maxCount={1}
+                      fileList={fileList}
+                      onChange={({ fileList }) => setFileList(fileList)}
+                    >
+                      <Button icon={<UploadOutlined />}>选择文件</Button>
+                    </Upload>
+                  </Form.Item>
+                  <Form.Item name="backupExisting" valuePropName="checked">
+                    <Checkbox>同名文件存在时先备份再覆盖（备份名：原文件名.时间戳）</Checkbox>
+                  </Form.Item>
+                </>
               ) : (
                 <Form.Item name="maxFileSize" label="单文件大小限制" extra="默认 1MB，最大 5MB；超过限制会在远端读取前失败。">
                   <InputNumber min={1} max={MAX_UPLOAD_FILE_SIZE} step={1024} style={{ width: '100%' }} addonAfter="bytes" />
@@ -317,7 +324,7 @@ export default function BatchJobs() {
           }, {
             key: 'script',
             label: '脚本/参数',
-            children: <pre className="self-healing-log">{selectedJob.type === 'run_script' ? selectedJob.script : `类型：${typeLabel[selectedJob.type]}\n目标范围：${selectedJob.targetMode === 'group' ? `主机组 ${selectedJob.hostGroup}` : '指定主机'}\n文件：${selectedJob.fileName || '-'}\n目标目录：${selectedJob.targetDirectory || '-'}\nMD5：${selectedJob.fileMd5 || selectedJob.baselineMd5 || '-'}`}</pre>,
+            children: <pre className="self-healing-log">{selectedJob.type === 'run_script' ? selectedJob.script : `类型：${typeLabel[selectedJob.type]}\n目标范围：${selectedJob.targetMode === 'group' ? `主机组 ${selectedJob.hostGroup}` : '指定主机'}\n文件：${selectedJob.fileName || '-'}\n目标目录：${selectedJob.targetDirectory || '-'}\n${selectedJob.type === 'upload_file' ? `先备份再覆盖：${selectedJob.backupExisting ? '是' : '否'}\n` : ''}MD5：${selectedJob.fileMd5 || selectedJob.baselineMd5 || '-'}`}</pre>,
           }]} />
         )}
       </Modal>

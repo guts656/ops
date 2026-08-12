@@ -24,6 +24,7 @@ const batchJobSchema = z.object({
   fileContentBase64: z.string().optional(),
   fileMd5: z.string().regex(/^[a-fA-F0-9]{32}$/).optional(),
   maxFileSize: z.coerce.number().int().positive().max(5 * 1024 * 1024).optional(),
+  backupExisting: z.boolean().optional(),
   script: z.string().optional(),
 }).superRefine((value, ctx) => {
   const targetMode = value.targetMode || 'hosts'

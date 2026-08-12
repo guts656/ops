@@ -46,6 +46,7 @@ export interface BatchJob {
   fileMd5?: string
   baselineMd5?: string
   maxFileSize?: number
+  backupExisting?: boolean
   script?: string
   startedAt: string
   completedAt?: string
@@ -69,5 +70,6 @@ export interface CreateBatchJobValues {
   fileContentBase64?: string
   fileMd5?: string
   maxFileSize?: number
+  backupExisting?: boolean
   script?: string
 }
