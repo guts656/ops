@@ -1,4 +1,4 @@
-import type { TopologyEdge, TopologyEdgeInput, TopologyGraph, TopologyInput, TopologyItem, TopologyNode, TopologyNodeInput, TopologyNodePositionInput } from '../types/topology'
+import type { TopologyCanvasData, TopologyEdge, TopologyEdgeInput, TopologyGraph, TopologyInput, TopologyItem, TopologyNode, TopologyNodeInput, TopologyNodePositionInput } from '../types/topology'
 import { http } from './http'
 
 export async function getTopologies(): Promise<TopologyItem[]> {
@@ -22,6 +22,11 @@ export async function deleteTopology(id: string): Promise<void> {
 
 export async function getTopology(topologyId: string): Promise<TopologyGraph> {
   const response = await http.get<{ data: TopologyGraph }>(`/topology/items/${topologyId}/graph`)
+  return response.data.data
+}
+
+export async function updateTopologyCanvas(topologyId: string, values: TopologyCanvasData): Promise<TopologyItem> {
+  const response = await http.put<{ data: TopologyItem }>(`/topology/items/${topologyId}/canvas`, values)
   return response.data.data
 }
 

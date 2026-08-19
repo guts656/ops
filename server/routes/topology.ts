@@ -1,14 +1,20 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { PERMISSIONS } from '../config/permissions'
-import { createTopology, createTopologyEdge, createTopologyNode, deleteTopology, deleteTopologyEdge, deleteTopologyNode, listTopologies, listTopology, syncDynamicTopology, updateTopology, updateTopologyEdge, updateTopologyNode, updateTopologyNodePositions } from '../data/topology'
+import { createTopology, createTopologyEdge, createTopologyNode, deleteTopology, deleteTopologyEdge, deleteTopologyNode, listTopologies, listTopology, syncDynamicTopology, updateTopology, updateTopologyCanvas, updateTopologyEdge, updateTopologyNode, updateTopologyNodePositions } from '../data/topology'
 import { authenticate } from '../middleware/authenticate'
 import { requirePermission } from '../middleware/requirePermission'
 
 const topologySchema = z.object({
   name: z.string().trim().min(1).max(80),
   type: z.string().trim().min(1).max(40),
+  mode: z.enum(['structured', 'canvas']).optional(),
   remark: z.string().trim().max(500).optional(),
+})
+
+const canvasSchema = z.object({
+  version: z.coerce.number().int().min(1).default(1),
+  items: z.array(z.unknown()).max(500).default([]),
 })
 
 const nodeSchema = z.object({
@@ -73,6 +79,14 @@ router.delete('/items/:topologyId', requirePermission(PERMISSIONS.TOPOLOGY_MANAG
 router.get('/items/:topologyId/graph', requirePermission(PERMISSIONS.TOPOLOGY_VIEW), async (req, res, next) => {
   try {
     res.json({ data: await listTopology(req.params.topologyId) })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.put('/items/:topologyId/canvas', requirePermission(PERMISSIONS.TOPOLOGY_MANAGE), async (req, res, next) => {
+  try {
+    res.json({ data: await updateTopologyCanvas(req.params.topologyId, canvasSchema.parse(req.body)) })
   } catch (error) {
     next(error)
   }

@@ -593,16 +593,19 @@ model HostAgentJob {
 }
 
 model Topology {
-  id        String         @id @default(cuid())
-  name      String
-  type      String
-  remark    String         @default("")
-  nodes     TopologyNode[]
-  edges     TopologyEdge[]
-  createdAt DateTime       @default(now()) @map("created_at")
-  updatedAt DateTime       @updatedAt @map("updated_at")
+  id         String         @id @default(cuid())
+  name       String
+  type       String
+  mode       String         @default("structured")
+  remark     String         @default("")
+  canvasData Json           @default("{}") @map("canvas_data")
+  nodes      TopologyNode[]
+  edges      TopologyEdge[]
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
 
   @@index([type])
+  @@index([mode])
   @@map("topologies")
 }
 

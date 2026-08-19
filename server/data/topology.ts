@@ -1,12 +1,19 @@
-import type { Topology, TopologyEdge, TopologyNode } from '../../src/generated/prisma/client'
+import type { Prisma, Topology, TopologyEdge, TopologyNode } from '../../src/generated/prisma/client'
 import { prisma } from '../db/prisma'
 
+export type TopologyMode = 'structured' | 'canvas'
 export type TopologyNodeType = 'business' | 'service' | 'host' | 'database' | 'middleware' | 'agent' | 'container' | 'note'
 
 export interface TopologyInput {
   name: string
   type: string
+  mode?: TopologyMode
   remark?: string
+}
+
+export interface TopologyCanvasInput {
+  version?: number
+  items?: unknown[]
 }
 
 export interface TopologyNodeInput {
@@ -83,9 +90,16 @@ function normalizeStatus(value: string | null | undefined) {
 function normalizeTopologyInput(input: TopologyInput) {
   const name = input.name.trim()
   const type = input.type.trim()
+  const mode = input.mode || 'structured'
   if (!name) throw new Error('拓扑名称不能为空')
   if (!type) throw new Error('拓扑类型不能为空')
-  return { name, type, remark: input.remark?.trim() || '' }
+  if (!['structured', 'canvas'].includes(mode)) throw new Error('拓扑模式不支持')
+  return { name, type, mode, remark: input.remark?.trim() || '' }
+}
+
+function normalizeCanvasInput(input: TopologyCanvasInput): Prisma.InputJsonObject {
+  const items = Array.isArray(input.items) ? JSON.parse(JSON.stringify(input.items)) as Prisma.InputJsonArray : []
+  return { version: Number(input.version || 1), items }
 }
 
 function normalizeNodeInput(input: TopologyNodeInput) {
@@ -114,7 +128,9 @@ function toTopology(topology: Topology) {
     id: topology.id,
     name: topology.name,
     type: topology.type,
+    mode: topology.mode as TopologyMode,
     remark: topology.remark,
+    canvasData: topology.canvasData,
     createdAt: topology.createdAt.toISOString(),
     updatedAt: topology.updatedAt.toISOString(),
   }
@@ -243,6 +259,11 @@ export async function createTopology(input: TopologyInput) {
 
 export async function updateTopology(topologyId: string, input: TopologyInput) {
   const topology = await prisma.topology.update({ where: { id: topologyId }, data: normalizeTopologyInput(input) })
+  return toTopology(topology)
+}
+
+export async function updateTopologyCanvas(topologyId: string, input: TopologyCanvasInput) {
+  const topology = await prisma.topology.update({ where: { id: topologyId }, data: { canvasData: normalizeCanvasInput(input) } })
   return toTopology(topology)
 }
 

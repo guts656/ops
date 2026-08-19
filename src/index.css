@@ -834,6 +834,7 @@ body {
   background: rgba(22, 119, 255, 0.12) !important;
 }
 
+.free-topology-canvas,
 .static-topology-canvas {
   position: relative;
   min-width: 980px;
@@ -856,6 +857,115 @@ body {
   width: 100%;
   height: 100%;
   pointer-events: none;
+}
+
+.free-topology-canvas .static-topology-lines {
+  pointer-events: auto;
+}
+
+.free-canvas-arrow {
+  cursor: grab;
+}
+
+.free-canvas-arrow.active line {
+  filter: drop-shadow(0 0 8px rgba(97, 218, 251, 0.72));
+}
+
+.free-canvas-endpoint {
+  pointer-events: auto;
+  cursor: crosshair;
+  fill: #071021;
+  stroke: #61dafb;
+  stroke-width: 3;
+}
+
+.free-canvas-endpoint.attached {
+  fill: #52c41a;
+  stroke: #d9f7be;
+}
+
+.free-canvas-arrow-label-input {
+  position: absolute;
+  z-index: 2;
+  width: 100px;
+  padding: 3px 6px;
+  color: #c8f5ff;
+  text-align: center;
+  background: rgba(7, 16, 33, 0.88);
+  border: 1px solid rgba(97, 218, 251, 0.42);
+  border-radius: 8px;
+  outline: none;
+}
+
+.free-canvas-item {
+  position: absolute;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  padding: 10px;
+  color: #edf7ff;
+  border: 1px solid rgba(97, 218, 251, 0.42);
+  border-radius: 14px;
+  cursor: grab;
+  font-weight: 700;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.free-canvas-item-text {
+  z-index: 2;
+  justify-content: start;
+  color: #dbe7ff;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.free-canvas-text-wrapper {
+  position: absolute;
+  z-index: 2;
+  padding: 0;
+  overflow: hidden;
+  cursor: grab;
+}
+
+.free-canvas-text-editor {
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+  color: inherit;
+  background: transparent;
+  overflow: hidden;
+  border: 0;
+  resize: none;
+  outline: none;
+  font: inherit;
+}
+
+.free-canvas-text-wrapper:active {
+  cursor: grabbing;
+}
+
+.free-canvas-item:hover,
+.free-canvas-item.active {
+  border-color: #61dafb;
+  box-shadow: 0 22px 54px rgba(97, 218, 251, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.free-canvas-item-text {
+  border-color: transparent !important;
+  background: transparent !important;
+}
+
+.free-canvas-item-text:hover,
+.free-canvas-item-text.active,
+.free-canvas-text-wrapper:hover,
+.free-canvas-text-wrapper.active {
+  border-width: 1px;
+  box-shadow: none;
+  outline: none;
+}
+
+.free-canvas-text-wrapper.active {
+  border-color: rgba(97, 218, 251, 0.42) !important;
 }
 
 .static-topology-edge-label {
