@@ -1,10 +1,10 @@
-import { CodeOutlined, DownloadOutlined, FileAddOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons'
+import { CodeOutlined, DownloadOutlined, FileAddOutlined, ReloadOutlined, RetweetOutlined, UploadOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Col, Flex, Form, Input, InputNumber, Modal, Progress, Radio, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography, Upload, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { UploadFile } from 'antd/es/upload/interface'
 import { useEffect, useMemo, useState } from 'react'
 import PermissionGate from '../components/auth/PermissionGate'
-import { createBatchJob, downloadBatchArtifact, listBatchJobs } from '../api/batchJobs'
+import { createBatchJob, downloadBatchArtifact, listBatchJobs, rerunFailedBatchJob } from '../api/batchJobs'
 import { queryHosts } from '../api/hosts'
 import { PERMISSIONS } from '../config/permissions'
 import type { BatchJob, BatchJobTarget, BatchJobType, CreateBatchJobValues } from '../types/batchJob'
@@ -68,6 +68,7 @@ export default function BatchJobs() {
   const [hosts, setHosts] = useState<Host[]>([])
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [rerunningJobId, setRerunningJobId] = useState<string>()
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedJob, setSelectedJob] = useState<BatchJob>()
   const [fileList, setFileList] = useState<UploadFile[]>([])
@@ -136,6 +137,26 @@ export default function BatchJobs() {
     }
   }
 
+  const rerunFailed = async (job: BatchJob) => {
+    setRerunningJobId(job.id)
+    try {
+      const rerun = await rerunFailedBatchJob(job.id)
+      message.success(`已提交 ${rerun.totalTargets} 台失败主机重跑`)
+      await load()
+      setSelectedJob(rerun)
+    } catch (error) {
+      message.error(getErrorMessage(error, '失败主机重跑提交失败'))
+    } finally {
+      setRerunningJobId(undefined)
+    }
+  }
+
+  const rerunButton = (job: BatchJob) => job.status !== 'running' && job.failedTargets > 0 ? (
+    <PermissionGate permission={PERMISSIONS.BATCH_EXECUTE}>
+      <Button type="link" icon={<RetweetOutlined />} loading={rerunningJobId === job.id} disabled={Boolean(rerunningJobId && rerunningJobId !== job.id)} onClick={() => rerunFailed(job)}>重跑失败主机</Button>
+    </PermissionGate>
+  ) : null
+
   const jobColumns: ColumnsType<BatchJob> = [
     { title: '任务名称', dataIndex: 'name', render: (_, record) => <Space direction="vertical" size={0}><Typography.Text strong>{record.name}</Typography.Text><Typography.Text type="secondary">{typeLabel[record.type]}</Typography.Text></Space> },
     { title: '状态', dataIndex: 'status', render: (value) => <Tag color={statusColor[value]}>{statusText(value)}</Tag> },
@@ -150,7 +171,7 @@ export default function BatchJobs() {
     { title: '操作人', dataIndex: 'operator' },
     { title: '开始时间', dataIndex: 'startedAt', width: 180 },
     { title: '摘要', dataIndex: 'summary' },
-    { title: '操作', width: 100, render: (_, record) => <Button type="link" onClick={() => setSelectedJob(record)}>日志</Button> },
+    { title: '操作', width: 220, render: (_, record) => <Space size={0}><Button type="link" onClick={() => setSelectedJob(record)}>日志</Button>{rerunButton(record)}</Space> },
   ]
 
   const targetColumns: ColumnsType<BatchJobTarget> = [
@@ -299,7 +320,13 @@ export default function BatchJobs() {
         </Form>
       </Modal>
 
-      <Modal title={selectedJob ? `执行日志：${selectedJob.name}` : '执行日志'} open={Boolean(selectedJob)} onCancel={() => setSelectedJob(undefined)} footer={null} width={1200}>
+      <Modal
+        title={selectedJob ? `执行日志：${selectedJob.name}` : '执行日志'}
+        open={Boolean(selectedJob)}
+        onCancel={() => setSelectedJob(undefined)}
+        footer={selectedJob ? <Space>{rerunButton(selectedJob)}<Button onClick={() => setSelectedJob(undefined)}>关闭</Button></Space> : null}
+        width={1200}
+      >
         {selectedJob && (
           <Tabs items={[{
             key: 'results',
