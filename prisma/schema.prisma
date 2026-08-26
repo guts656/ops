@@ -747,27 +747,33 @@ model HostAgentJob {
 }
 
 model BatchJob {
-  id              String           @id
-  name            String
-  type            String
-  status          String
-  operator        String
-  targetDirectory String?          @map("target_directory")
-  fileName        String?          @map("file_name")
-  fileSize        Int?             @map("file_size")
-  script          String?
-  params          Json?
-  startedAt       DateTime         @default(now()) @map("started_at")
-  completedAt     DateTime?        @map("completed_at")
-  summary         String
-  targets         BatchJobTarget[]
-  artifacts       BatchJobArtifact[]
-  createdAt       DateTime         @default(now()) @map("created_at")
-  updatedAt       DateTime         @updatedAt @map("updated_at")
+  id                  String           @id
+  name                String
+  type                String
+  status              String
+  operator            String
+  targetDirectory     String?          @map("target_directory")
+  fileName            String?          @map("file_name")
+  fileSize            Int?             @map("file_size")
+  script              String?
+  params              Json?
+  retryOfJobId        String?          @unique @map("retry_of_job_id")
+  sourceFilePath      String?          @map("source_file_path")
+  sourceFileExpiresAt DateTime?        @map("source_file_expires_at")
+  startedAt           DateTime         @default(now()) @map("started_at")
+  completedAt         DateTime?        @map("completed_at")
+  summary             String
+  retryOfJob          BatchJob?        @relation("BatchJobRetry", fields: [retryOfJobId], references: [id], onDelete: SetNull)
+  retryJob            BatchJob?        @relation("BatchJobRetry")
+  targets             BatchJobTarget[]
+  artifacts           BatchJobArtifact[]
+  createdAt           DateTime         @default(now()) @map("created_at")
+  updatedAt           DateTime         @updatedAt @map("updated_at")
 
   @@index([status])
   @@index([type])
   @@index([startedAt])
+  @@index([sourceFileExpiresAt])
   @@map("batch_jobs")
 }
 
@@ -800,7 +806,7 @@ model BatchJobTarget {
 model BatchJobArtifact {
   id         String         @id
   jobId      String         @map("job_id")
-  targetId   String         @map("target_id")
+  targetId   String         @unique @map("target_id")
   hostId     String         @map("host_id")
   fileName   String         @map("file_name")
   remotePath String         @map("remote_path")
@@ -814,7 +820,6 @@ model BatchJobArtifact {
   createdAt  DateTime       @default(now()) @map("created_at")
 
   @@index([jobId])
-  @@index([targetId])
   @@index([hostId])
   @@map("batch_job_artifacts")
 }

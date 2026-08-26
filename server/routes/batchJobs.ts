@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { PERMISSIONS } from '../config/permissions'
-import { createBatchJob, getBatchJob, getBatchJobArtifact, listBatchJobs } from '../data/batchJobs'
+import { BatchJobRetryError, createBatchJob, getBatchJob, getBatchJobArtifact, listBatchJobs, rerunFailedBatchJob } from '../data/batchJobs'
 import { authenticate } from '../middleware/authenticate'
 import { requirePermission } from '../middleware/requirePermission'
 import type { AuthRequest } from '../types/auth'
@@ -81,6 +81,18 @@ router.post('/', requirePermission(PERMISSIONS.BATCH_EXECUTE), async (req: AuthR
     const values = batchJobSchema.parse(req.body)
     res.json({ data: await createBatchJob(values, req.user!.displayName) })
   } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/:id/rerun-failed', requirePermission(PERMISSIONS.BATCH_EXECUTE), async (req: AuthRequest, res, next) => {
+  try {
+    res.json({ data: await rerunFailedBatchJob(paramId(req.params.id), req.user!.displayName) })
+  } catch (error) {
+    if (error instanceof BatchJobRetryError) {
+      const status = error.code === 'not_found' ? 404 : error.code === 'source_missing' ? 409 : 400
+      return res.status(status).json({ message: error.message })
+    }
     next(error)
   }
 })

@@ -1,0 +1,45 @@
+import { readFile } from 'node:fs/promises'
+import assert from 'node:assert/strict'
+
+const batchData = await readFile(new URL('../server/data/batchJobs.ts', import.meta.url), 'utf8')
+const agentRoutes = await readFile(new URL('../server/routes/agentMetrics.ts', import.meta.url), 'utf8')
+const batchRoutes = await readFile(new URL('../server/routes/batchJobs.ts', import.meta.url), 'utf8')
+const server = await readFile(new URL('../server/index.ts', import.meta.url), 'utf8')
+const schema = await readFile(new URL('../prisma/schema.prisma', import.meta.url), 'utf8')
+const migration = await readFile(new URL('../prisma/migrations/20260826090000_add_batch_job_recovery/migration.sql', import.meta.url), 'utf8')
+const page = await readFile(new URL('../src/pages/BatchJobs.tsx', import.meta.url), 'utf8')
+const vite = await readFile(new URL('../vite.config.js', import.meta.url), 'utf8')
+
+assert.match(schema, /retryOfJobId\s+String\?\s+@unique/, 'one direct retry child should be enforced by the database')
+assert.match(batchData, /if \(source\.retryJob\) return toJob\(source\.retryJob\)/, 'repeated retry requests should return the existing child')
+assert.match(batchData, /error\.code === 'P2002'/, 'concurrent retry creation should handle the unique constraint race')
+assert.match(batchData, /where: \{ retryOfJobId: source\.id \}/, 'the concurrent loser should load the winning retry child')
+assert.match(batchData, /source\.targets\.filter\(\(target\) => target\.status === 'failed'\)/, 'only failed targets should be copied')
+assert.match(batchData, /baselineMd5: typeof params\.baselineMd5 === 'string' \? params\.baselineMd5 : undefined/, 'comparison retries should preserve the original baseline')
+assert.match(batchData, /source\.sourceFileExpiresAt <= new Date\(\)/, 'expired upload sources should be rejected')
+assert.match(batchRoutes, /error\.code === 'source_missing' \? 409/, 'missing upload sources should return HTTP 409')
+
+assert.match(batchData, /export async function recoverBatchJobsOnStartup/, 'startup recovery should be implemented')
+assert.match(batchData, /exitCode: 125/, 'interrupted non-Agent targets should expose an unknown-result exit code')
+assert.match(batchData, /任务不会自动重放；请确认目标主机状态后手工重跑失败主机。/, 'startup recovery should never automatically replay remote operations')
+assert.match(server, /recoverBatchJobsOnStartup\(\)/, 'startup recovery should run when the API starts')
+assert.match(server, /cleanupExpiredBatchJobSources\(\)/, 'upload source cleanup should run when the API starts')
+
+assert.match(agentRoutes, /where: \{ id: pendingJob\.id, hostId: auth\.host\.id, status: 'pending' \}/, 'Agent polling should claim pending work conditionally')
+assert.match(agentRoutes, /if \(claimed\.count === 1\) job = pendingJob/, 'only the winning Agent poll should receive a job')
+assert.match(agentRoutes, /if \(job\.status !== 'running'\) return res\.json\(\{ ok: true \}\)/, 'terminal Agent callbacks should be idempotent')
+assert.match(agentRoutes, /where: \{ id: payload\.batchTargetId, hostId: auth\.host\.id, status: 'running' \}/, 'script callbacks should not overwrite terminal batch targets')
+assert.match(batchData, /where: \{ id: batchTargetId, hostId, status: 'running' \}/, 'file callbacks should not overwrite terminal batch targets')
+assert.match(batchData, /pg_advisory_xact_lock\(hashtext\(\$\{jobId\}\)\)/, 'parent status refreshes should be serialized per batch job')
+assert.match(batchData, /where: \{ id: jobId, status: 'running', targets: \{ none: \{ status: 'running' \} \} \}/, 'parent jobs should transition to terminal only after all targets finish')
+assert.match(batchData, /where: \{ id: agentJobId, hostId, status: 'running' \}/, 'file callbacks should transition Agent jobs only once')
+assert.match(schema, /targetId\s+String\s+@unique/, 'download artifacts should be unique per target')
+assert.match(batchData, /batchJobArtifact\.upsert/, 'duplicate download callbacks should not create duplicate artifact rows')
+
+assert.match(migration, /ROW_NUMBER\(\) OVER \(PARTITION BY "target_id" ORDER BY "created_at" DESC, "id" DESC\)/, 'migration should deduplicate historical artifacts before adding uniqueness')
+assert.match(migration, /CREATE UNIQUE INDEX IF NOT EXISTS "batch_job_artifacts_target_id_key"/, 'migration should enforce artifact idempotency')
+assert.match(page, /Modal\.confirm\(/, 'failed-host reruns should require confirmation')
+assert.match(page, /可能已经产生部分副作用/, 'confirmation should warn about uncertain remote side effects')
+assert.match(vite, /target: 'http:\/\/localhost:3001'/, 'the monitoring branch API proxy should remain on port 3001')
+
+console.log('batch-job-recovery-ok')

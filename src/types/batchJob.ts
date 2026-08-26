@@ -45,6 +45,7 @@ export interface BatchJob {
   fileSize?: number
   fileMd5?: string
   baselineMd5?: string
+  retryOfJobId?: string
   maxFileSize?: number
   script?: string
   startedAt: string

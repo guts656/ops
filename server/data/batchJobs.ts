@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Prisma } from '../../src/generated/prisma/client'
 import { prisma } from '../db/prisma'
@@ -33,12 +33,18 @@ export interface CreateBatchJobInput {
   fileMd5?: string
   maxFileSize?: number
   script?: string
+  baselineMd5?: string
+  retryOfJobId?: string
 }
 
 const DEFAULT_DOWNLOAD_FILE_BYTES = 1024 * 1024
 const MAX_DOWNLOAD_FILE_BYTES = 5 * 1024 * 1024
 const FILE_PREVIEW_BYTES = 4096
 const ARTIFACT_ROOT = 'storage/batch-files'
+const SOURCE_FILE_NAME = 'source.bin'
+const SOURCE_FILE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+const SOURCE_STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000
+const SOURCE_ORPHAN_MAX_AGE_MS = 24 * 60 * 60 * 1000
 const WINDOWS_BATCH_FILE_MIN_AGENT_VERSION = 'v2.10.18'
 const WINDOWS_BATCH_JOB_TIMEOUT_MS = 5 * 60 * 1000
 
@@ -69,6 +75,7 @@ function toJob(row: BatchJobRow) {
     params: row.params ?? undefined,
     fileMd5: typeof params.fileMd5 === 'string' ? params.fileMd5 : undefined,
     baselineMd5: typeof params.baselineMd5 === 'string' ? params.baselineMd5 : undefined,
+    retryOfJobId: row.retryOfJobId ?? undefined,
     maxFileSize: typeof params.maxFileSize === 'number' ? params.maxFileSize : undefined,
     startedAt: shanghaiTime(row.startedAt),
     completedAt: row.completedAt ? shanghaiTime(row.completedAt) : undefined,
@@ -430,17 +437,48 @@ function artifactLocalPath(jobId: string, targetId: string, fileName: string) {
   return `${ARTIFACT_ROOT}/${jobId}/${targetId}/${fileName}`
 }
 
-async function saveArtifact(jobId: string, targetId: string, host: BatchTargetHost, remotePath: string, fileName: string, content: Buffer, md5: string) {
+function sourceFileLocalPath(jobId: string) {
+  return `${ARTIFACT_ROOT}/${jobId}/${SOURCE_FILE_NAME}`
+}
+
+async function stageSourceFile(jobId: string, content: Buffer) {
+  const directory = join(process.cwd(), ARTIFACT_ROOT, jobId)
+  const stagedPath = join(directory, `${SOURCE_FILE_NAME}.staging`)
+  const finalPath = join(directory, SOURCE_FILE_NAME)
+  await mkdir(directory, { recursive: true })
+  await writeFile(stagedPath, content, { flag: 'wx' })
+  await rename(stagedPath, finalPath)
+  return sourceFileLocalPath(jobId)
+}
+
+async function removeJobFiles(jobId: string) {
+  await rm(join(process.cwd(), ARTIFACT_ROOT, jobId), { recursive: true, force: true })
+}
+
+async function removeSourceFile(localPath: string) {
+  await rm(join(process.cwd(), localPath), { force: true })
+}
+
+async function saveArtifact(jobId: string, targetId: string, host: BatchTargetHost, remotePath: string, fileName: string, content: Buffer, md5: string, db: Pick<Prisma.TransactionClient, 'batchJobArtifact'> = prisma) {
   const relativePath = artifactLocalPath(jobId, targetId, fileName)
   const absolutePath = join(process.cwd(), relativePath)
   await mkdir(join(process.cwd(), ARTIFACT_ROOT, jobId, targetId), { recursive: true })
   await writeFile(absolutePath, content)
-  return prisma.batchJobArtifact.create({
-    data: {
+  return db.batchJobArtifact.upsert({
+    where: { targetId },
+    create: {
       id: id('batch-artifact'),
       jobId,
       targetId,
       hostId: host.id,
+      fileName,
+      remotePath,
+      localPath: relativePath,
+      size: content.length,
+      md5,
+      mimeType: 'application/octet-stream',
+    },
+    update: {
       fileName,
       remotePath,
       localPath: relativePath,
@@ -486,58 +524,71 @@ async function finishTarget(targetId: string, success: boolean, summary: string,
   await prisma.batchJobTarget.update({ where: { id: targetId }, data: { status: success ? 'success' : 'failed', remotePath, stdout, stderr, summary, completedAt: new Date() } })
 }
 
-async function refreshGenericBatchJobStatus(jobId: string) {
-  const targets = await prisma.batchJobTarget.findMany({ where: { jobId }, select: { status: true } })
-  if (!targets.length) return
-  const running = targets.filter((target) => target.status === 'running').length
-  const success = targets.filter((target) => target.status === 'success').length
-  const failed = targets.filter((target) => target.status === 'failed').length
-  if (running > 0) {
-    await prisma.batchJob.update({ where: { id: jobId }, data: { status: 'running', summary: `执行中：成功 ${success}，失败 ${failed}，等待 ${running}` } })
-    return
-  }
-  const status = success === targets.length ? 'success' : success === 0 ? 'failed' : 'partial'
-  await prisma.batchJob.update({ where: { id: jobId }, data: { status, completedAt: new Date(), summary: `完成 ${success}/${targets.length} 台主机，失败 ${failed}` } })
-}
-
-export async function refreshCompareBatchJobStatus(jobId: string) {
-  const [job, targets] = await Promise.all([
-    prisma.batchJob.findUnique({ where: { id: jobId }, select: { params: true } }),
-    prisma.batchJobTarget.findMany({ where: { jobId }, orderBy: { startedAt: 'asc' } }),
-  ])
-  if (!targets.length || targets.some((target) => target.status === 'running')) return
-
-  const successful = targets.filter((target) => target.status === 'success' && md5OfStdout(target.stdout))
-  const baselineMd5 = md5OfStdout(successful[0]?.stdout || '')
-  let matched = 0
-  let mismatched = 0
-  if (baselineMd5) {
-    for (const target of successful) {
-      const md5 = md5OfStdout(target.stdout)
-      const same = md5 === baselineMd5
-      if (same) matched += 1
-      else mismatched += 1
-      await prisma.batchJobTarget.update({
-        where: { id: target.id },
-        data: { status: same ? 'success' : 'failed', summary: same ? `与基线一致：MD5 ${md5}` : `与基线不一致：基线 ${baselineMd5}，当前 ${md5}` },
+export async function refreshGenericBatchJobStatus(jobId: string) {
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${jobId}))`
+    const targets = await tx.batchJobTarget.findMany({ where: { jobId }, select: { status: true } })
+    if (!targets.length) return
+    const running = targets.filter((target) => target.status === 'running').length
+    const success = targets.filter((target) => target.status === 'success').length
+    const failed = targets.filter((target) => target.status === 'failed').length
+    if (running > 0) {
+      await tx.batchJob.updateMany({
+        where: { id: jobId, status: 'running', targets: { some: { status: 'running' } } },
+        data: { summary: `执行中：成功 ${success}，失败 ${failed}，等待 ${running}` },
       })
+      return
     }
-  }
-
-  const failed = targets.length - matched
-  const status = matched === targets.length ? 'success' : matched === 0 ? 'failed' : 'partial'
-  await prisma.batchJob.update({
-    where: { id: jobId },
-    data: {
-      status,
-      completedAt: new Date(),
-      summary: `对比完成：一致 ${matched}，不一致 ${mismatched}，失败 ${failed - mismatched}`,
-      params: { ...(paramsObject(job?.params)), baselineMd5, matchedTargets: matched, mismatchedTargets: mismatched, failedTargets: failed - mismatched } as Prisma.InputJsonValue,
-    },
+    const status = success === targets.length ? 'success' : success === 0 ? 'failed' : 'partial'
+    await tx.batchJob.updateMany({
+      where: { id: jobId, status: 'running', targets: { none: { status: 'running' } } },
+      data: { status, completedAt: new Date(), summary: `完成 ${success}/${targets.length} 台主机，失败 ${failed}` },
+    })
   })
 }
 
-export async function completeWindowsBatchFileAgentResult(hostId: string, payload: Record<string, unknown>, result: { success: boolean; summary?: string; stdout?: string; stderr?: string; exitCode?: number; remotePath?: string; bytes?: number; md5?: string; preview?: string; contentBase64?: string }) {
+export async function refreshCompareBatchJobStatus(jobId: string) {
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${jobId}))`
+    const [job, targets] = await Promise.all([
+      tx.batchJob.findUnique({ where: { id: jobId }, select: { params: true, status: true } }),
+      tx.batchJobTarget.findMany({ where: { jobId }, orderBy: { startedAt: 'asc' } }),
+    ])
+    if (!job || job.status !== 'running' || !targets.length || targets.some((target) => target.status === 'running')) return
+
+    const successful = targets.filter((target) => target.status === 'success' && md5OfStdout(target.stdout))
+    const jobParams = paramsObject(job.params)
+    const baselineMd5 = normalizeMd5(typeof jobParams.baselineMd5 === 'string' ? jobParams.baselineMd5 : undefined) ?? md5OfStdout(successful[0]?.stdout || '')
+    let matched = 0
+    let mismatched = 0
+    if (baselineMd5) {
+      for (const target of successful) {
+        const md5 = md5OfStdout(target.stdout)
+        const same = md5 === baselineMd5
+        if (same) matched += 1
+        else mismatched += 1
+        await tx.batchJobTarget.update({
+          where: { id: target.id },
+          data: { status: same ? 'success' : 'failed', summary: same ? `与基线一致：MD5 ${md5}` : `与基线不一致：基线 ${baselineMd5}，当前 ${md5}` },
+        })
+      }
+    }
+
+    const failed = targets.length - matched
+    const status = matched === targets.length ? 'success' : matched === 0 ? 'failed' : 'partial'
+    await tx.batchJob.updateMany({
+      where: { id: jobId, status: 'running', targets: { none: { status: 'running' } } },
+      data: {
+        status,
+        completedAt: new Date(),
+        summary: `对比完成：一致 ${matched}，不一致 ${mismatched}，失败 ${failed - mismatched}`,
+        params: { ...jobParams, baselineMd5, matchedTargets: matched, mismatchedTargets: mismatched, failedTargets: failed - mismatched } as Prisma.InputJsonValue,
+      },
+    })
+  })
+}
+
+export async function completeWindowsBatchFileAgentResult(agentJobId: string, hostId: string, payload: Record<string, unknown>, result: { success: boolean; summary?: string; stdout?: string; stderr?: string; exitCode?: number; remotePath?: string; bytes?: number; md5?: string; preview?: string; contentBase64?: string }) {
   const batchJobId = typeof payload.batchJobId === 'string' ? payload.batchJobId : undefined
   const batchTargetId = typeof payload.batchTargetId === 'string' ? payload.batchTargetId : undefined
   const action = payload.action as BatchAgentFileAction | undefined
@@ -558,23 +609,42 @@ export async function completeWindowsBatchFileAgentResult(hostId: string, payloa
     preview ? `PREVIEW:\n${preview}` : '',
   ].filter(Boolean).join('\n')
 
-  if (result.success && action === 'download_file' && result.contentBase64 !== undefined && remotePath && md5) {
-    const content = Buffer.from(result.contentBase64, 'base64')
-    await saveArtifact(batchJobId, batchTargetId, host as BatchTargetHost, remotePath, safeFileName(typeof payload.fileName === 'string' ? payload.fileName : 'download.bin'), content, md5)
-  }
-
-  await prisma.batchJobTarget.updateMany({
-    where: { id: batchTargetId, hostId },
-    data: {
-      status: result.success ? 'success' : 'failed',
-      exitCode: result.exitCode ?? (result.success ? 0 : 1),
-      remotePath,
-      stdout,
-      stderr: result.stderr || '',
-      summary,
-      completedAt: new Date(),
-    },
+  const now = new Date()
+  const content = result.success && action === 'download_file' && result.contentBase64 !== undefined && remotePath && md5
+    ? Buffer.from(result.contentBase64, 'base64')
+    : undefined
+  const completed = await prisma.$transaction(async (tx) => {
+    const agentJob = await tx.hostAgentJob.updateMany({
+      where: { id: agentJobId, hostId, status: 'running' },
+      data: {
+        status: result.success ? 'success' : 'failed',
+        summary,
+        stdout: result.stdout || '',
+        stderr: result.stderr || '',
+        completedAt: now,
+      },
+    })
+    if (agentJob.count === 0) return false
+    const target = await tx.batchJobTarget.updateMany({
+      where: { id: batchTargetId, hostId, status: 'running' },
+      data: {
+        status: result.success ? 'success' : 'failed',
+        exitCode: result.exitCode ?? (result.success ? 0 : 1),
+        remotePath,
+        stdout,
+        stderr: result.stderr || '',
+        summary,
+        completedAt: now,
+      },
+    })
+    if (target.count === 0) throw new Error('批处理目标已结束，拒绝迟到的 Agent 回调')
+    if (content && remotePath && md5) {
+      await saveArtifact(batchJobId, batchTargetId, host as BatchTargetHost, remotePath, safeFileName(typeof payload.fileName === 'string' ? payload.fileName : 'download.bin'), content, md5, tx)
+    }
+    return true
   })
+  if (!completed) return
+
   if (action === 'compare_file') await refreshCompareBatchJobStatus(batchJobId)
   else await refreshGenericBatchJobStatus(batchJobId)
 }
@@ -674,24 +744,28 @@ async function runCompareJob(jobId: string, targets: BatchJobTargetRow[], hosts:
   }
 
   if (queuedCount > 0) {
-    await prisma.batchJob.update({ where: { id: jobId }, data: { status: 'running', summary: `已下发 Windows Agent ${queuedCount} 台，等待文件对比结果回传` } })
+    await prisma.batchJob.updateMany({
+      where: { id: jobId, status: 'running', targets: { some: { status: 'running' } } },
+      data: { summary: `已下发 Windows Agent ${queuedCount} 台，等待文件对比结果回传` },
+    })
     return
   }
 
   const successful = results.filter((result) => result.success && result.md5)
-  const baseline = successful[0]
+  const persistedParams = paramsObject((await prisma.batchJob.findUnique({ where: { id: jobId }, select: { params: true } }))?.params)
+  const baselineMd5 = normalizeMd5(input.baselineMd5) ?? normalizeMd5(typeof persistedParams.baselineMd5 === 'string' ? persistedParams.baselineMd5 : undefined) ?? successful[0]?.md5
   let matched = 0
   let mismatched = 0
-  if (baseline?.md5) {
+  if (baselineMd5) {
     for (const result of successful) {
-      const same = result.md5 === baseline.md5
+      const same = result.md5 === baselineMd5
       if (same) matched += 1
       else mismatched += 1
       await prisma.batchJobTarget.update({
         where: { id: result.targetId },
         data: {
           status: same ? 'success' : 'failed',
-          summary: same ? `与基线一致：MD5 ${result.md5}` : `与基线不一致：基线 ${baseline.md5}，当前 ${result.md5}`,
+          summary: same ? `与基线一致：MD5 ${result.md5}` : `与基线不一致：基线 ${baselineMd5}，当前 ${result.md5}`,
         },
       })
     }
@@ -705,7 +779,7 @@ async function runCompareJob(jobId: string, targets: BatchJobTargetRow[], hosts:
       status,
       completedAt: new Date(),
       summary: `对比完成：一致 ${matched}，不一致 ${mismatched}，失败 ${failed - mismatched}`,
-      params: { ...(paramsObject((await prisma.batchJob.findUnique({ where: { id: jobId }, select: { params: true } }))?.params)), baselineMd5: baseline?.md5, matchedTargets: matched, mismatchedTargets: mismatched, failedTargets: failed - mismatched } as Prisma.InputJsonValue,
+      params: { ...persistedParams, baselineMd5, matchedTargets: matched, mismatchedTargets: mismatched, failedTargets: failed - mismatched } as Prisma.InputJsonValue,
     },
   })
 }
@@ -734,58 +808,257 @@ async function runBatchJob(jobId: string, targets: BatchJobTargetRow[], hosts: B
   }
 
   if (queuedCount > 0) {
-    await prisma.batchJob.update({ where: { id: jobId }, data: { status: 'running', summary: `已完成 ${successCount} 台，已下发 Windows Agent ${queuedCount} 台，等待回传` } })
+    await prisma.batchJob.updateMany({
+      where: { id: jobId, status: 'running', targets: { some: { status: 'running' } } },
+      data: { summary: `已完成 ${successCount} 台，已下发 Windows Agent ${queuedCount} 台，等待回传` },
+    })
     return
   }
   const status = successCount === hosts.length ? 'success' : successCount === 0 ? 'failed' : 'partial'
   await prisma.batchJob.update({ where: { id: jobId }, data: { status, completedAt: new Date(), summary: `完成 ${successCount}/${hosts.length} 台主机` } })
 }
 
-export async function createBatchJob(input: CreateBatchJobInput, operator: string) {
-  const targetInfo = await resolveTargetHostIds(input)
-  const uniqueHostIds = targetInfo.hostIds
+interface PreparedBatchJob {
+  input: CreateBatchJobInput
+  operator: string
+  jobId: string
+  hostIds: string[]
+  hostGroup?: string
+  targetMode: TargetMode
+  hosts: BatchTargetHost[]
+  uploadContent?: Buffer
+  fileMd5?: string
+  sourceFilePath?: string
+}
+
+async function prepareBatchJob(input: CreateBatchJobInput, operator: string, hostIds?: string[]): Promise<PreparedBatchJob> {
+  const targetInfo = hostIds
+    ? { targetMode: 'hosts' as const, hostGroup: undefined, hostIds }
+    : await resolveTargetHostIds(input)
+  const uniqueHostIds = Array.from(new Set(targetInfo.hostIds))
   if (!uniqueHostIds.length) throw new Error('请选择目标主机')
   if (uniqueHostIds.length > 50) throw new Error('单次批处理最多选择 50 台主机')
 
   const hosts = await loadTargetHosts(uniqueHostIds, input)
   const jobId = id('batch-job')
   const uploadContent = input.type === 'upload_file' && input.fileContentBase64 !== undefined ? Buffer.from(input.fileContentBase64, 'base64') : undefined
-  const contentSize = uploadContent?.length
   const fileMd5 = uploadContent !== undefined ? md5Hex(uploadContent) : undefined
   const clientMd5 = normalizeMd5(input.fileMd5)
   if (clientMd5 && fileMd5 && clientMd5 !== fileMd5) throw new Error(`上传文件 MD5 与服务端计算不一致：客户端 ${clientMd5}，服务端 ${fileMd5}`)
+  const sourceFilePath = uploadContent !== undefined ? await stageSourceFile(jobId, uploadContent) : undefined
+  return { input, operator, jobId, hostIds: uniqueHostIds, hostGroup: targetInfo.hostGroup, targetMode: targetInfo.targetMode, hosts, uploadContent, fileMd5, sourceFilePath }
+}
+
+async function createPreparedBatchJob(prepared: PreparedBatchJob) {
+  const { input, operator, jobId, hostIds, hostGroup, targetMode, hosts, uploadContent, fileMd5, sourceFilePath } = prepared
   const params = {
-    targetMode: targetInfo.targetMode,
+    targetMode,
     targetOs: input.targetOs,
-    hostIds: uniqueHostIds,
-    hostGroup: targetInfo.hostGroup,
+    hostIds,
+    hostGroup,
     fileMd5,
+    baselineMd5: normalizeMd5(input.baselineMd5),
     maxFileSize: input.type === 'compare_file' || input.type === 'download_file' ? maxFileSize(input.maxFileSize) : undefined,
   }
-  const job = await prisma.batchJob.create({
-    data: {
-      id: jobId,
-      name: input.name,
-      type: input.type,
-      status: 'running',
-      operator,
-      targetDirectory: input.targetDirectory,
-      fileName: input.fileName,
-      fileSize: input.type === 'upload_file' ? contentSize : undefined,
-      script: input.type === 'run_script' ? input.script : undefined,
-      params: params as Prisma.InputJsonValue,
-      summary: '批处理后台执行中',
-      targets: {
-        create: hosts.map((host) => ({ id: id('batch-target'), hostId: host.id, hostIp: host.ip, hostname: host.hostname, status: 'running', summary: '等待执行' })),
+  try {
+    return await prisma.batchJob.create({
+      data: {
+        id: jobId,
+        name: input.name,
+        type: input.type,
+        status: 'running',
+        operator,
+        targetDirectory: input.targetDirectory,
+        fileName: input.fileName,
+        fileSize: input.type === 'upload_file' ? uploadContent?.length : undefined,
+        script: input.type === 'run_script' ? input.script : undefined,
+        params: params as Prisma.InputJsonValue,
+        retryOfJobId: input.retryOfJobId,
+        sourceFilePath,
+        sourceFileExpiresAt: sourceFilePath ? new Date(Date.now() + SOURCE_FILE_RETENTION_MS) : undefined,
+        summary: '批处理后台执行中',
+        targets: {
+          create: hosts.map((host) => ({ id: id('batch-target'), hostId: host.id, hostIp: host.ip, hostname: host.hostname, status: 'running', summary: '等待执行' })),
+        },
       },
-    },
-    include: { targets: { orderBy: { startedAt: 'asc' } }, artifacts: true },
-  })
+      include: { targets: { orderBy: { startedAt: 'asc' } }, artifacts: true },
+    })
+  } catch (error) {
+    if (sourceFilePath) await removeJobFiles(jobId)
+    throw error
+  }
+}
 
-  void runBatchJob(jobId, job.targets, hosts, input).catch(async (error) => {
+function startPreparedBatchJob(prepared: PreparedBatchJob, job: Awaited<ReturnType<typeof createPreparedBatchJob>>) {
+  void runBatchJob(prepared.jobId, job.targets, prepared.hosts, prepared.input).catch(async (error) => {
     const message = error instanceof Error ? error.message : String(error)
-    await prisma.batchJob.update({ where: { id: jobId }, data: { status: 'failed', completedAt: new Date(), summary: `批处理执行异常：${message}` } })
+    const now = new Date()
+    await prisma.$transaction([
+      prisma.batchJobTarget.updateMany({
+        where: { jobId: prepared.jobId, status: 'running' },
+        data: {
+          status: 'failed',
+          exitCode: 125,
+          completedAt: now,
+          summary: `批处理执行异常：${message}`,
+          stderr: '任务执行状态未知，请确认目标主机状态后再重跑失败主机。',
+        },
+      }),
+      prisma.hostAgentJob.updateMany({
+        where: { operator: `batch:${prepared.jobId}`, status: { in: ['pending', 'running'] } },
+        data: { status: 'failed', completedAt: now, summary: `批处理执行异常：${message}` },
+      }),
+      prisma.batchJob.updateMany({
+        where: { id: prepared.jobId, status: 'running' },
+        data: { status: 'failed', completedAt: now, summary: `批处理执行异常：${message}` },
+      }),
+    ])
   })
+}
 
+export async function createBatchJob(input: CreateBatchJobInput, operator: string) {
+  const prepared = await prepareBatchJob(input, operator)
+  const job = await createPreparedBatchJob(prepared)
+  startPreparedBatchJob(prepared, job)
   return toJob(job)
+}
+
+export class BatchJobRetryError extends Error {
+  constructor(public code: 'not_found' | 'not_finished' | 'no_failed_targets' | 'source_missing', message: string) {
+    super(message)
+  }
+}
+
+function isUniqueConstraintError(error: unknown) {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002'
+}
+
+export async function rerunFailedBatchJob(jobId: string, operator: string) {
+  const source = await prisma.batchJob.findUnique({
+    where: { id: jobId },
+    include: {
+      targets: { orderBy: { startedAt: 'asc' } },
+      retryJob: { include: { targets: { orderBy: { startedAt: 'asc' } }, artifacts: true } },
+    },
+  })
+  if (!source) throw new BatchJobRetryError('not_found', '批处理任务不存在')
+  if (source.retryJob) return toJob(source.retryJob)
+  if (source.status === 'running') throw new BatchJobRetryError('not_finished', '任务仍在执行中，暂不能重跑')
+
+  const failedHostIds = Array.from(new Set(source.targets.filter((target) => target.status === 'failed').map((target) => target.hostId)))
+  if (!failedHostIds.length) throw new BatchJobRetryError('no_failed_targets', '该任务没有失败主机')
+
+  const params = paramsObject(source.params)
+  let fileContentBase64: string | undefined
+  if (source.type === 'upload_file') {
+    if (!source.sourceFilePath || !source.sourceFileExpiresAt || source.sourceFileExpiresAt <= new Date()) {
+      throw new BatchJobRetryError('source_missing', '原上传文件已过期或不存在，无法重跑失败主机')
+    }
+    try {
+      fileContentBase64 = (await readFile(join(process.cwd(), source.sourceFilePath))).toString('base64')
+    } catch {
+      throw new BatchJobRetryError('source_missing', '原上传文件不存在，无法重跑失败主机')
+    }
+  }
+
+  const input: CreateBatchJobInput = {
+    name: `${source.name}（失败重跑）`,
+    type: source.type as BatchJobType,
+    targetMode: 'hosts',
+    targetOs: params.targetOs === 'Linux' || params.targetOs === 'Windows' ? params.targetOs : undefined,
+    hostIds: failedHostIds,
+    targetDirectory: source.targetDirectory ?? undefined,
+    fileName: source.fileName ?? undefined,
+    fileContentBase64,
+    fileMd5: typeof params.fileMd5 === 'string' ? params.fileMd5 : undefined,
+    maxFileSize: typeof params.maxFileSize === 'number' ? params.maxFileSize : undefined,
+    script: source.script ?? undefined,
+    baselineMd5: typeof params.baselineMd5 === 'string' ? params.baselineMd5 : undefined,
+    retryOfJobId: source.id,
+  }
+  const prepared = await prepareBatchJob(input, operator, failedHostIds)
+  try {
+    const job = await createPreparedBatchJob(prepared)
+    startPreparedBatchJob(prepared, job)
+    return toJob(job)
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error
+    const existing = await prisma.batchJob.findUnique({
+      where: { retryOfJobId: source.id },
+      include: { targets: { orderBy: { startedAt: 'asc' } }, artifacts: true },
+    })
+    if (!existing) throw error
+    return toJob(existing)
+  }
+}
+
+export async function recoverBatchJobsOnStartup(now = new Date()) {
+  await recoverStaleWindowsBatchJobs(undefined, now)
+  const jobs = await prisma.batchJob.findMany({
+    where: { targets: { some: { status: 'running' } } },
+    include: { targets: { where: { status: 'running' } } },
+  })
+  let interruptedTargets = 0
+  for (const job of jobs) {
+    const agentJobs = await prisma.hostAgentJob.findMany({
+      where: {
+        operator: `batch:${job.id}`,
+        type: { in: ['batch_run_script', 'batch_file_operation'] },
+        status: { in: ['pending', 'running'] },
+      },
+      select: { stdout: true },
+    })
+    const activeTargetIds = new Set(agentJobs.map((agentJob) => parseAgentJobBatchPayload(agentJob.stdout).batchTargetId).filter(Boolean))
+    const unknownTargetIds = job.targets.map((target) => target.id).filter((targetId) => !activeTargetIds.has(targetId))
+    if (unknownTargetIds.length) {
+      const result = await prisma.batchJobTarget.updateMany({
+        where: { id: { in: unknownTargetIds }, status: 'running' },
+        data: {
+          status: 'failed',
+          exitCode: 125,
+          summary: 'API 服务重启导致执行中断，远端执行结果未知',
+          stderr: '任务不会自动重放；请确认目标主机状态后手工重跑失败主机。',
+          completedAt: now,
+        },
+      })
+      interruptedTargets += result.count
+    }
+    if (job.type === 'compare_file') await refreshCompareBatchJobStatus(job.id)
+    else await refreshGenericBatchJobStatus(job.id)
+  }
+  return interruptedTargets
+}
+
+export async function cleanupExpiredBatchJobSources(now = new Date()) {
+  const expired = await prisma.batchJob.findMany({
+    where: { sourceFilePath: { not: null }, sourceFileExpiresAt: { lte: now } },
+    select: { id: true, sourceFilePath: true },
+  })
+  for (const job of expired) {
+    if (job.sourceFilePath) await removeSourceFile(job.sourceFilePath)
+    await prisma.batchJob.updateMany({
+      where: { id: job.id, sourceFileExpiresAt: { lte: now } },
+      data: { sourceFilePath: null, sourceFileExpiresAt: null },
+    })
+  }
+
+  const root = join(process.cwd(), ARTIFACT_ROOT)
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
+  let orphaned = 0
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const stagedPath = join(root, entry.name, `${SOURCE_FILE_NAME}.staging`)
+    const staged = await stat(stagedPath).catch(() => undefined)
+    if (staged && staged.mtime.getTime() <= now.getTime() - SOURCE_STAGING_MAX_AGE_MS) await rm(stagedPath, { force: true })
+
+    const sourcePath = join(root, entry.name, SOURCE_FILE_NAME)
+    const source = await stat(sourcePath).catch(() => undefined)
+    if (!source || source.mtime.getTime() > now.getTime() - SOURCE_ORPHAN_MAX_AGE_MS) continue
+    const job = await prisma.batchJob.findUnique({ where: { id: entry.name }, select: { id: true } })
+    if (!job) {
+      await rm(sourcePath, { force: true })
+      orphaned += 1
+    }
+  }
+  return expired.length + orphaned
 }

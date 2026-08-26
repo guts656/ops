@@ -38,6 +38,7 @@ import { startAgentLogUploadWatchdog } from './services/agentLogUploadWatchdog.t
 import { startWindowsWeeklyMaintenanceScheduler } from './services/windowsWeeklyMaintenanceScheduler.ts'
 import { setupRealtime } from './services/realtime.ts'
 import { cleanupIgnoredWindowsServiceMonitoring, cleanupLinuxServiceMonitoring } from './data/hostServices.ts'
+import { cleanupExpiredBatchJobSources, recoverBatchJobsOnStartup } from './data/batchJobs.ts'
 
 dotenv.config()
 validateSecurityEnv()
@@ -98,27 +99,42 @@ app.use(errorHandler)
 
 setupRealtime(server)
 
-server.listen(port, () => {
-  startHostPullScheduler()
-  startSelfHealingEvaluator()
-  startLogMonitorEvaluator()
-  startLogRetentionScheduler()
-  startHealthReportScheduler()
-  startCgiMonitorEvaluator()
-  startIpushMonitorEvaluator()
-  startSslCertificateScheduler()
-  startHostOfflineWatchdog()
-  startAgentLogUploadWatchdog()
-  startWindowsWeeklyMaintenanceScheduler()
-  cleanupLinuxServiceMonitoring()
-    .then((result) => {
-      if (result.services || result.events || result.alertsResolved) console.log('Linux service monitoring cleanup:', result)
-    })
-    .catch((error) => console.error('Linux service monitoring cleanup failed:', error))
-  cleanupIgnoredWindowsServiceMonitoring()
-    .then((result) => {
-      if (result.services || result.alertsResolved) console.log('Ignored Windows service monitoring cleanup:', result)
-    })
-    .catch((error) => console.error('Ignored Windows service monitoring cleanup failed:', error))
-  console.log(`API server listening on http://localhost:${port}`)
+async function startServer() {
+  const recovered = await recoverBatchJobsOnStartup()
+  if (recovered) console.log(`Recovered ${recovered} interrupted batch job targets`)
+  const cleaned = await cleanupExpiredBatchJobSources()
+  if (cleaned) console.log(`Cleaned ${cleaned} expired batch upload sources`)
+
+  server.listen(port, () => {
+    setInterval(() => {
+      void cleanupExpiredBatchJobSources().catch((error) => console.error('Batch upload source cleanup failed:', error))
+    }, 60 * 60 * 1000)
+    startHostPullScheduler()
+    startSelfHealingEvaluator()
+    startLogMonitorEvaluator()
+    startLogRetentionScheduler()
+    startHealthReportScheduler()
+    startCgiMonitorEvaluator()
+    startIpushMonitorEvaluator()
+    startSslCertificateScheduler()
+    startHostOfflineWatchdog()
+    startAgentLogUploadWatchdog()
+    startWindowsWeeklyMaintenanceScheduler()
+    cleanupLinuxServiceMonitoring()
+      .then((result) => {
+        if (result.services || result.events || result.alertsResolved) console.log('Linux service monitoring cleanup:', result)
+      })
+      .catch((error) => console.error('Linux service monitoring cleanup failed:', error))
+    cleanupIgnoredWindowsServiceMonitoring()
+      .then((result) => {
+        if (result.services || result.alertsResolved) console.log('Ignored Windows service monitoring cleanup:', result)
+      })
+      .catch((error) => console.error('Ignored Windows service monitoring cleanup failed:', error))
+    console.log(`API server listening on http://localhost:${port}`)
+  })
+}
+
+void startServer().catch((error) => {
+  console.error('API server startup failed:', error)
+  process.exitCode = 1
 })

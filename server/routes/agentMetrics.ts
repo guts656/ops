@@ -3,7 +3,7 @@ import { ZodError, z } from 'zod'
 import { enrollWindowsOfflineAgent, recordHostMetrics } from '../data/hosts.ts'
 import { ingestHostContainers } from '../data/hostContainers.ts'
 import { ingestHostServices, ingestServiceEvents } from '../data/hostServices.ts'
-import { completeWindowsBatchFileAgentResult } from '../data/batchJobs.ts'
+import { completeWindowsBatchFileAgentResult, refreshGenericBatchJobStatus } from '../data/batchJobs.ts'
 import { getHostLogCollectionPaths } from '../data/logCollectionRules.ts'
 import { upsertHostLogCollectionStatus } from '../data/logCollectionStatus.ts'
 import { getAgentLocalLogMonitorConfig, ingestAgentLocalLogMonitorResults } from '../data/logMonitorRules.ts'
@@ -206,20 +206,6 @@ function statusForAction(action: 'start' | 'stop' | 'restart') {
   return action === 'stop' ? 'stopped' : 'Running'
 }
 
-async function refreshBatchJobStatus(batchJobId: string) {
-  const targets = await prisma.batchJobTarget.findMany({ where: { jobId: batchJobId }, select: { status: true } })
-  if (!targets.length) return
-  const running = targets.filter((target) => target.status === 'running').length
-  const success = targets.filter((target) => target.status === 'success').length
-  const failed = targets.filter((target) => target.status === 'failed').length
-  if (running > 0) {
-    await prisma.batchJob.update({ where: { id: batchJobId }, data: { status: 'running', summary: `执行中：成功 ${success}，失败 ${failed}，等待 ${running}` } })
-    return
-  }
-  const status = success === targets.length ? 'success' : success === 0 ? 'failed' : 'partial'
-  await prisma.batchJob.update({ where: { id: batchJobId }, data: { status, completedAt: new Date(), summary: `完成 ${success}/${targets.length} 台主机，失败 ${failed}` } })
-}
-
 function parseBatchPayload(job: { stdout: string }) {
   try {
     return JSON.parse(job.stdout || '{}') as BatchScriptPayload
@@ -400,14 +386,22 @@ router.get('/hosts/:id/jobs/next', async (req, res, next) => {
 
     await recoverStaleUpdateJobForHost(auth.host.id)
     const supportedJobTypes = ['start_service', 'stop_service', 'restart_service', 'batch_run_script', 'batch_file_operation', 'update_agent']
-    const job = await prisma.hostAgentJob.findFirst({
-      where: { hostId: auth.host.id, status: 'pending', type: { in: supportedJobTypes } },
-      orderBy: { createdAt: 'asc' },
-    })
-    if (!job) return res.json({ job: null })
+    let job
+    while (!job) {
+      const pendingJob = await prisma.hostAgentJob.findFirst({
+        where: { hostId: auth.host.id, status: 'pending', type: { in: supportedJobTypes } },
+        orderBy: { createdAt: 'asc' },
+      })
+      if (!pendingJob) return res.json({ job: null })
+      const claimed = await prisma.hostAgentJob.updateMany({
+        where: { id: pendingJob.id, hostId: auth.host.id, status: 'pending' },
+        data: { status: 'running' },
+      })
+      if (claimed.count === 1) job = pendingJob
+    }
 
     if (job.type === 'update_agent') {
-      await prisma.hostAgentJob.update({ where: { id: job.id }, data: { status: 'running', summary: `Agent 正在更新到 ${AGENT_VERSION}` } })
+      await prisma.hostAgentJob.update({ where: { id: job.id }, data: { summary: `Agent 正在更新到 ${AGENT_VERSION}` } })
       await touchAgentHeartbeat(auth.host.id)
       if (auth.host.os === 'Windows' && !isAgentVersionAtLeast(auth.host.agentVersion, WINDOWS_SELF_UPDATE_MIN_AGENT_VERSION)) {
         await prisma.hostAgentJob.update({
@@ -445,7 +439,7 @@ router.get('/hosts/:id/jobs/next', async (req, res, next) => {
         await prisma.hostAgentJob.update({ where: { id: job.id }, data: { status: 'failed', summary: '批处理 Agent 任务参数不完整', completedAt: new Date() } })
         return res.json({ job: null })
       }
-      await prisma.hostAgentJob.update({ where: { id: job.id }, data: { status: 'running', summary: 'Windows Agent 正在执行批处理脚本' } })
+      await prisma.hostAgentJob.update({ where: { id: job.id }, data: { summary: 'Windows Agent 正在执行批处理脚本' } })
       await prisma.batchJobTarget.updateMany({ where: { id: payload.batchTargetId, hostId: auth.host.id }, data: { status: 'running', summary: 'Windows Agent 已拉取脚本，正在执行' } })
       await touchAgentHeartbeat(auth.host.id)
       return res.json({ job: { id: job.id, type: job.type, action: 'run_script', batchJobId: payload.batchJobId, batchTargetId: payload.batchTargetId, scriptBase64: payload.scriptBase64, timeoutSeconds: payload.timeoutSeconds || 120 } })
@@ -457,7 +451,7 @@ router.get('/hosts/:id/jobs/next', async (req, res, next) => {
         await prisma.hostAgentJob.update({ where: { id: job.id }, data: { status: 'failed', summary: 'Windows 文件批处理 Agent 任务参数不完整', completedAt: new Date() } })
         return res.json({ job: null })
       }
-      await prisma.hostAgentJob.update({ where: { id: job.id }, data: { status: 'running', summary: 'Windows Agent 正在执行文件批处理' } })
+      await prisma.hostAgentJob.update({ where: { id: job.id }, data: { summary: 'Windows Agent 正在执行文件批处理' } })
       await prisma.batchJobTarget.updateMany({ where: { id: payload.batchTargetId, hostId: auth.host.id }, data: { status: 'running', summary: 'Windows Agent 已拉取文件任务，正在执行' } })
       await touchAgentHeartbeat(auth.host.id)
       return res.json({ job: { id: job.id, type: job.type, ...payload } })
@@ -518,21 +512,24 @@ router.post('/hosts/:id/jobs/:jobId/result', async (req, res, next) => {
 
     if (job.type === 'batch_run_script') {
       const result = batchScriptJobResultSchema.parse(req.body)
+      if (job.status !== 'running') return res.json({ ok: true })
       const payload = parseBatchPayload(job)
       const summary = result.summary || (result.success ? '批处理脚本执行成功' : '批处理脚本执行失败')
-      await prisma.hostAgentJob.update({
-        where: { id: job.id },
-        data: {
-          status: result.success ? 'success' : 'failed',
-          summary,
-          stdout: result.stdout || '',
-          stderr: result.stderr || '',
-          completedAt: now,
-        },
-      })
-      if (payload.batchTargetId && payload.batchJobId) {
-        await prisma.batchJobTarget.updateMany({
-          where: { id: payload.batchTargetId, hostId: auth.host.id },
+      if (!payload.batchTargetId || !payload.batchJobId) return res.json({ ok: true })
+      const completed = await prisma.$transaction(async (tx) => {
+        const agentJob = await tx.hostAgentJob.updateMany({
+          where: { id: job.id, hostId: auth.host.id, status: 'running' },
+          data: {
+            status: result.success ? 'success' : 'failed',
+            summary,
+            stdout: result.stdout || '',
+            stderr: result.stderr || '',
+            completedAt: now,
+          },
+        })
+        if (agentJob.count === 0) return false
+        const target = await tx.batchJobTarget.updateMany({
+          where: { id: payload.batchTargetId, hostId: auth.host.id, status: 'running' },
           data: {
             status: result.success ? 'success' : 'failed',
             exitCode: result.exitCode ?? (result.success ? 0 : 1),
@@ -542,27 +539,21 @@ router.post('/hosts/:id/jobs/:jobId/result', async (req, res, next) => {
             completedAt: now,
           },
         })
-        await refreshBatchJobStatus(payload.batchJobId)
-      }
+        if (target.count === 0) throw new Error('批处理目标已结束，拒绝迟到的 Agent 回调')
+        return true
+      })
+      if (!completed) return res.json({ ok: true })
+      await refreshGenericBatchJobStatus(payload.batchJobId)
       await touchAgentHeartbeat(auth.host.id)
       return res.json({ ok: true })
     }
 
     if (job.type === 'batch_file_operation') {
       const result = batchFileJobResultSchema.parse(req.body)
+      if (job.status !== 'running') return res.json({ ok: true })
       const payload = parseBatchPayload(job) as Record<string, unknown>
       const summary = result.summary || (result.success ? 'Windows 文件批处理执行成功' : 'Windows 文件批处理执行失败')
-      await prisma.hostAgentJob.update({
-        where: { id: job.id },
-        data: {
-          status: result.success ? 'success' : 'failed',
-          summary,
-          stdout: result.stdout || '',
-          stderr: result.stderr || '',
-          completedAt: now,
-        },
-      })
-      await completeWindowsBatchFileAgentResult(auth.host.id, payload, { ...result, summary })
+      await completeWindowsBatchFileAgentResult(job.id, auth.host.id, payload, { ...result, summary })
       await touchAgentHeartbeat(auth.host.id)
       return res.json({ ok: true })
     }

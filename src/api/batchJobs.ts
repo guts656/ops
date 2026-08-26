@@ -16,6 +16,11 @@ export async function createBatchJob(values: CreateBatchJobValues): Promise<Batc
   return response.data.data
 }
 
+export async function rerunFailedBatchJob(id: string): Promise<BatchJob> {
+  const response = await http.post<{ data: BatchJob }>(`/batch-jobs/${id}/rerun-failed`)
+  return response.data.data
+}
+
 export async function downloadBatchArtifact(jobId: string, artifact: BatchJobArtifact) {
   const response = await http.get<Blob>(`/batch-jobs/${jobId}/artifacts/${artifact.id}/download`, { responseType: 'blob' })
   const url = window.URL.createObjectURL(response.data)
